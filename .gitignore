@@ -1,11 +1,46 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.pyo
+*.pyc
 build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 .venv
-md_files/*
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation (optional - remove if you want to keep these)
+md_files/
+.github/agents/
