@@ -1,5 +1,5 @@
 """Audio Transcript Pydantic schemas - NO user tracking (fully shared)."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 
@@ -7,12 +7,14 @@ from typing import Optional
 class AudioTranscriptRequest(BaseModel):
     """Schema for audio transcription processing request."""
 
-    audio_ids: list[int] = Field(..., min_items=1, description="List of audio IDs to transcribe")
+    audio_ids: list[int] = Field(..., min_length=1, description="List of audio IDs to transcribe")
     detected_language: Optional[str] = Field(None, description="Override detected language")
 
 
 class AudioTranscriptSchema(BaseModel):
     """Schema for audio transcript response - NO extracted_by, NO extracted_at (uses created_at)."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     audio_id: int
@@ -21,9 +23,6 @@ class AudioTranscriptSchema(BaseModel):
     detected_language: Optional[str] = None
     processing_time_ms: Optional[int] = None  # Time Gemini took to transcribe
     created_at: datetime  # When the transcript was extracted
-
-    class Config:
-        from_attributes = True
 
 
 class AudioTranscriptResponseSchema(BaseModel):

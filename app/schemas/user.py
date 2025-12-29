@@ -1,5 +1,5 @@
 """User-related Pydantic schemas."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 
 
@@ -13,21 +13,19 @@ class LoginSchema(BaseModel):
 class TokenSchema(BaseModel):
     """Schema for token response."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     access_token: str
     token_type: str = "bearer"
     user_id: int
     username: str
 
-    class Config:
-        from_attributes = True
-
 
 class UserSchema(BaseModel):
     """Schema for user response (public data only)."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     username: str
     created_at: datetime
-
-    class Config:
-        from_attributes = True

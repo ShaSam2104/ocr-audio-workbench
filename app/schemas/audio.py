@@ -1,5 +1,5 @@
 """Audio Pydantic schemas - NO user_id (fully shared across all users)."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 
@@ -27,6 +27,8 @@ class AudioUpdateSchema(BaseModel):
 class AudioSchema(BaseModel):
     """Schema for audio response - NO user_id, NO uploader_id (fully shared)."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     chapter_id: int
     filename: str
@@ -37,9 +39,6 @@ class AudioSchema(BaseModel):
     transcription_status: str  # pending, processing, completed, failed
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class AudioListSchema(BaseModel):

@@ -1,5 +1,5 @@
 """Book and Chapter Pydantic schemas - fully shared across all users."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 
@@ -21,14 +21,13 @@ class BookUpdateSchema(BaseModel):
 class BookSchema(BaseModel):
     """Schema for book response - NO user_id (fully shared)."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     description: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class ChapterCreateSchema(BaseModel):
@@ -50,6 +49,8 @@ class ChapterUpdateSchema(BaseModel):
 class ChapterSchema(BaseModel):
     """Schema for chapter response."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     book_id: int
     name: str
@@ -57,9 +58,6 @@ class ChapterSchema(BaseModel):
     sequence_order: Optional[int] = None
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class BookDetailSchema(BookSchema):

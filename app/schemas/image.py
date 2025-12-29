@@ -1,5 +1,5 @@
 """Image Pydantic schemas - NO user_id (fully shared across all users)."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional
 
@@ -29,6 +29,8 @@ class ImageUpdateSchema(BaseModel):
 class ImageSchema(BaseModel):
     """Schema for image response - NO user_id, NO uploaded_by (fully shared)."""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     chapter_id: int
     filename: str
@@ -39,9 +41,6 @@ class ImageSchema(BaseModel):
     is_cropped: bool
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class ImageListSchema(BaseModel):
