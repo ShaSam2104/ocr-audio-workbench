@@ -1,6 +1,6 @@
 """Background task management for OCR processing."""
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 from enum import Enum
@@ -28,7 +28,7 @@ class ImageTaskInfo:
     """Information about a single image in a task."""
     image_id: int
     status: ImageStatus = ImageStatus.QUEUED
-    queued_at: datetime = field(default_factory=datetime.utcnow)
+    queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     started_at: Optional[datetime] = None
     processed_at: Optional[datetime] = None
     error: Optional[str] = None
@@ -56,7 +56,7 @@ class OCRTask:
     status: TaskStatus = TaskStatus.QUEUED
     total_images: int = 0
     images: List[ImageTaskInfo] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     completed_at: Optional[datetime] = None
 
     @property
@@ -167,7 +167,7 @@ class OCRTaskManager:
         for img in task.images:
             if img.image_id == image_id:
                 img.status = ImageStatus.PROCESSING
-                img.started_at = datetime.utcnow()
+                img.started_at = datetime.now(UTC)
                 logger.debug(f"Task {task_id}, image {image_id} status: {img.status.value}")
                 return True
         
@@ -191,13 +191,13 @@ class OCRTaskManager:
         for img in task.images:
             if img.image_id == image_id:
                 img.status = ImageStatus.COMPLETED
-                img.processed_at = datetime.utcnow()
+                img.processed_at = datetime.now(UTC)
                 logger.debug(f"Task {task_id}, image {image_id} status: {img.status.value}")
                 
                 # If all images done, mark task as completed
                 if task.completed_count == task.total_images:
                     task.status = TaskStatus.COMPLETED
-                    task.completed_at = datetime.utcnow()
+                    task.completed_at = datetime.now(UTC)
                     logger.info(f"Task {task_id} completed")
                 
                 return True
@@ -223,7 +223,7 @@ class OCRTaskManager:
         for img in task.images:
             if img.image_id == image_id:
                 img.status = ImageStatus.FAILED
-                img.processed_at = datetime.utcnow()
+                img.processed_at = datetime.now(UTC)
                 img.error = error_msg
                 logger.warning(f"Task {task_id}, image {image_id} failed: {error_msg}")
                 return True
@@ -245,7 +245,7 @@ class OCRTaskManager:
             return False
         
         task.status = TaskStatus.FAILED
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(UTC)
         logger.error(f"Task {task_id} marked as failed")
         return True
 
@@ -261,7 +261,7 @@ class OCRTaskManager:
         """
         from datetime import timedelta
         
-        cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
+        cutoff_time = datetime.now(UTC) - timedelta(hours=max_age_hours)
         to_remove = []
         
         for task_id, task in self.tasks.items():

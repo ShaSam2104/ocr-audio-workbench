@@ -44,3 +44,4 @@ Thumbs.db
 # Documentation (optional - remove if you want to keep these)
 md_files/
 .github/agents/
+misc/*

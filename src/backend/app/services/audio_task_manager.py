@@ -1,6 +1,6 @@
 """Background task management for audio transcription processing."""
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 from enum import Enum
@@ -28,7 +28,7 @@ class AudioTaskInfo:
     """Information about a single audio in a task."""
     audio_id: int
     status: AudioStatus = AudioStatus.QUEUED
-    queued_at: datetime = field(default_factory=datetime.utcnow)
+    queued_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     started_at: Optional[datetime] = None
     processed_at: Optional[datetime] = None
     error: Optional[str] = None
@@ -56,7 +56,7 @@ class AudioTranscriptionTask:
     status: TaskStatus = TaskStatus.QUEUED
     total_audios: int = 0
     audios: List[AudioTaskInfo] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     completed_at: Optional[datetime] = None
 
     @property
@@ -167,7 +167,7 @@ class AudioTranscriptionTaskManager:
         for audio in task.audios:
             if audio.audio_id == audio_id:
                 audio.status = AudioStatus.PROCESSING
-                audio.started_at = datetime.utcnow()
+                audio.started_at = datetime.now(UTC)
                 logger.debug(f"Task {task_id}, audio {audio_id} status: {audio.status.value}")
                 return True
         
@@ -191,13 +191,13 @@ class AudioTranscriptionTaskManager:
         for audio in task.audios:
             if audio.audio_id == audio_id:
                 audio.status = AudioStatus.COMPLETED
-                audio.processed_at = datetime.utcnow()
+                audio.processed_at = datetime.now(UTC)
                 logger.debug(f"Task {task_id}, audio {audio_id} status: {audio.status.value}")
                 
                 # If all audios done, mark task as completed
                 if task.completed_count == task.total_audios:
                     task.status = TaskStatus.COMPLETED
-                    task.completed_at = datetime.utcnow()
+                    task.completed_at = datetime.now(UTC)
                     logger.info(f"Task {task_id} completed")
                 
                 return True
@@ -223,7 +223,7 @@ class AudioTranscriptionTaskManager:
         for audio in task.audios:
             if audio.audio_id == audio_id:
                 audio.status = AudioStatus.FAILED
-                audio.processed_at = datetime.utcnow()
+                audio.processed_at = datetime.now(UTC)
                 audio.error = error_msg
                 logger.warning(f"Task {task_id}, audio {audio_id} failed: {error_msg}")
                 return True
@@ -245,7 +245,7 @@ class AudioTranscriptionTaskManager:
             return False
         
         task.status = TaskStatus.FAILED
-        task.completed_at = datetime.utcnow()
+        task.completed_at = datetime.now(UTC)
         logger.error(f"Task {task_id} marked as failed")
         return True
 
@@ -261,7 +261,7 @@ class AudioTranscriptionTaskManager:
         """
         from datetime import timedelta
         
-        cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
+        cutoff_time = datetime.now(UTC) - timedelta(hours=max_age_hours)
         to_remove = []
         
         for task_id, task in self.tasks.items():
