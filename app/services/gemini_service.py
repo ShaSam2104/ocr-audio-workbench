@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 from typing import Tuple, Optional
-import google.generativeai as genai
+import google.genai as genai
 from PIL import Image
 from app.logger import logger
 
@@ -26,8 +26,7 @@ Do not add any extra commentary or headers."""
         Args:
             api_key: Google API key for Gemini
         """
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.0-flash")
+        self.client = genai.Client(api_key=api_key)
         logger.info("GeminiService initialized with gemini-2.0-flash model")
 
     def extract_text_from_image(self, image_path: str) -> Tuple[str, str, int]:
@@ -60,10 +59,13 @@ Do not add any extra commentary or headers."""
         # Call Gemini with prompt and image (same pattern as your notebook)
         start_time = time.time()
         try:
-            response = self.model.generate_content([
-                self.EXTRACTION_PROMPT,
-                image,
-            ])
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    self.EXTRACTION_PROMPT,
+                    image,
+                ],
+            )
             
             processing_time_ms = int((time.time() - start_time) * 1000)
             
@@ -124,9 +126,12 @@ Do not add any extra commentary or headers."""
         start_time = time.time()
         try:
             # Upload file to Gemini (required for audio)
-            print(f"[DEBUG] Uploading audio file: {audio_path}")
-            audio_file = genai.upload_file(str(audio_path), mime_type=mime_type)
-            logger.debug(f"Audio file uploaded to Gemini: {audio_file.uri}")
+            logger.debug(f"Uploading audio file: {audio_path}")
+            with open(str(audio_path), "rb") as f:
+                audio_file = self.client.files.upload(
+                    file=(audio_path.name, f, mime_type)
+                )
+            logger.debug(f"Audio file uploaded to Gemini: {audio_file.name}")
 
             # Build prompt with language hint if provided
             prompt = self.TRANSCRIPTION_PROMPT
@@ -134,10 +139,13 @@ Do not add any extra commentary or headers."""
                 prompt += f"\nLanguage hint: {language_hint}"
 
             # Transcribe using Gemini audio mode
-            response = self.model.generate_content([prompt, audio_file])
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[prompt, audio_file],
+            )
 
             # Clean up uploaded file
-            genai.delete_file(audio_file.name)
+            self.client.files.delete(audio_file.name)
 
             processing_time_ms = int((time.time() - start_time) * 1000)
 
