@@ -37,6 +37,10 @@ from app.schemas.transcript import (
     AudioTranscriptResponseSchema,
     AudioTranscriptStatusSchema,
 )
+from app.schemas.export import (
+    ExportFolderRequest,
+    ExportSelectionRequest,
+)
 
 __all__ = [
     "LoginSchema",
@@ -69,4 +73,6 @@ __all__ = [
     "AudioTranscriptSchema",
     "AudioTranscriptResponseSchema",
     "AudioTranscriptStatusSchema",
+    "ExportFolderRequest",
+    "ExportSelectionRequest",
 ]

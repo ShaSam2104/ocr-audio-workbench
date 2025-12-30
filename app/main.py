@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from app.config import API_TITLE, API_VERSION, CORS_ORIGINS, MINIO_IMAGE_BUCKET, MINIO_AUDIO_BUCKET
 from app.database import init_db
 from app.logger import logger
-from app.routers import auth, books, chapters, images, audios, ocr, transcription, text, search
+from app.routers import auth, books, chapters, images, audios, ocr, transcription, text, search, export
 from app.dependencies import get_minio_client
 
 
@@ -63,6 +63,7 @@ app.include_router(ocr.router)
 app.include_router(transcription.router)
 app.include_router(text.router)
 app.include_router(search.router)
+app.include_router(export.router)
 
 
 # Health check endpoint
