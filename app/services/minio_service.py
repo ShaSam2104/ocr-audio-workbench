@@ -1,21 +1,20 @@
 """MinIO S3-compatible object storage service."""
-import boto3
 import hashlib
 import logging
-from botocore.client import Config
-from botocore.exceptions import ClientError
 from pathlib import Path
 from typing import Optional
+from minio import Minio
+from minio.error import S3Error
 
 logger = logging.getLogger(__name__)
 
 
 class MinIOService:
-    """S3-compatible MinIO client for image and audio storage."""
+    """MinIO client for image and audio storage."""
 
     def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False):
         """
-        Initialize MinIO client using boto3 (S3-compatible).
+        Initialize MinIO client using official minio library.
 
         Args:
             endpoint: MinIO endpoint (e.g., "localhost:9000" or "minio.example.com")
@@ -23,18 +22,14 @@ class MinIOService:
             secret_key: MinIO secret key
             secure: Use HTTPS (True) or HTTP (False)
         """
-        protocol = "https" if secure else "http"
-        endpoint_url = f"{protocol}://{endpoint}"
-
-        self.s3_client = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            config=Config(signature_version="s3v4"),
+        self.client = Minio(
+            endpoint=endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=secure,
         )
         self.endpoint = endpoint
-        logger.info(f"MinIO client initialized: {endpoint_url}")
+        logger.info(f"MinIO client initialized: {endpoint}")
 
     async def ensure_buckets_exist(self, buckets: list[str]) -> None:
         """
@@ -45,19 +40,15 @@ class MinIOService:
         """
         for bucket_name in buckets:
             try:
-                self.s3_client.head_bucket(Bucket=bucket_name)
-                logger.info(f"Bucket '{bucket_name}' already exists")
-            except ClientError as e:
-                if e.response["Error"]["Code"] == "404":
-                    try:
-                        self.s3_client.create_bucket(Bucket=bucket_name)
-                        logger.info(f"Created bucket '{bucket_name}'")
-                    except ClientError as create_error:
-                        logger.error(f"Failed to create bucket '{bucket_name}': {create_error}")
-                        raise
+                exists = self.client.bucket_exists(bucket_name)
+                if exists:
+                    logger.info(f"Bucket '{bucket_name}' already exists")
                 else:
-                    logger.error(f"Error checking bucket '{bucket_name}': {e}")
-                    raise
+                    self.client.make_bucket(bucket_name)
+                    logger.info(f"Created bucket '{bucket_name}'")
+            except S3Error as e:
+                logger.error(f"Error handling bucket '{bucket_name}': {e}")
+                raise
 
     async def upload_file(self, bucket: str, object_key: str, file_path: str) -> dict:
         """
@@ -75,19 +66,19 @@ class MinIOService:
             file_size = Path(file_path).stat().st_size
             file_hash = await self.get_file_hash(file_path)
 
-            self.s3_client.upload_file(
-                Filename=file_path,
-                Bucket=bucket,
-                Key=object_key,
+            self.client.fput_object(
+                bucket_name=bucket,
+                object_name=object_key,
+                file_path=file_path,
             )
-            logger.info(f"Uploaded file to s3://{bucket}/{object_key} (size: {file_size} bytes)")
+            logger.info(f"Uploaded file to minio://{bucket}/{object_key} (size: {file_size} bytes)")
 
             return {
                 "object_key": object_key,
                 "file_size": file_size,
                 "file_hash": file_hash,
             }
-        except Exception as e:
+        except S3Error as e:
             logger.error(f"Failed to upload file to MinIO: {e}")
             raise
 
@@ -105,8 +96,8 @@ class MinIOService:
         """
         try:
             Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-            self.s3_client.download_file(Bucket=bucket, Key=object_key, Filename=local_path)
-            logger.info(f"Downloaded file from s3://{bucket}/{object_key} to {local_path}")
+            self.client.fget_object(bucket_name=bucket, object_name=object_key, file_path=local_path)
+            logger.info(f"Downloaded file from minio://{bucket}/{object_key} to {local_path}")
             return True
         except Exception as e:
             logger.error(f"Failed to download file from MinIO: {e}")
@@ -124,10 +115,10 @@ class MinIOService:
             True if successful
         """
         try:
-            self.s3_client.delete_object(Bucket=bucket, Key=object_key)
-            logger.info(f"Deleted file from s3://{bucket}/{object_key}")
+            self.client.remove_object(bucket_name=bucket, object_name=object_key)
+            logger.info(f"Deleted file from minio://{bucket}/{object_key}")
             return True
-        except Exception as e:
+        except S3Error as e:
             logger.error(f"Failed to delete file from MinIO: {e}")
             return False
 
@@ -160,14 +151,14 @@ class MinIOService:
             Presigned URL
         """
         try:
-            url = self.s3_client.generate_presigned_url(
-                ClientMethod="get_object",
-                Params={"Bucket": bucket, "Key": object_key},
-                ExpiresIn=expiration,
+            url = self.client.get_presigned_download_url(
+                bucket_name=bucket,
+                object_name=object_key,
+                expires=expiration,
             )
-            logger.info(f"Generated presigned URL for s3://{bucket}/{object_key}")
+            logger.info(f"Generated presigned URL for minio://{bucket}/{object_key}")
             return url
-        except Exception as e:
+        except S3Error as e:
             logger.error(f"Failed to generate presigned URL: {e}")
             raise
 
@@ -183,10 +174,10 @@ class MinIOService:
             True if file exists
         """
         try:
-            self.s3_client.head_object(Bucket=bucket, Key=object_key)
+            self.client.stat_object(bucket_name=bucket, object_name=object_key)
             return True
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "404":
+        except S3Error as e:
+            if e.code == "NoSuchKey":
                 return False
             logger.error(f"Error checking file existence: {e}")
             raise
