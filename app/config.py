@@ -22,8 +22,15 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 
+# MinIO Configuration
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_IMAGE_BUCKET = "images"
+MINIO_AUDIO_BUCKET = "audio"
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+
 # File Upload Configuration
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 
 # Gemini Configuration

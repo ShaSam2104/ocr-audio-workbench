@@ -1,17 +1,38 @@
 """Dependency injection for FastAPI endpoints."""
 from typing import Optional
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi import Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
 from app.auth import decode_access_token
+from app.services.minio_service import MinIOService
+from app.config import MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE
 
-security = HTTPBearer()
+
+# MinIO service singleton
+_minio_service: Optional[MinIOService] = None
+
+
+def get_minio_client() -> MinIOService:
+    """
+    Get or create MinIO client singleton.
+
+    Returns:
+        MinIOService instance
+    """
+    global _minio_service
+    if _minio_service is None:
+        _minio_service = MinIOService(
+            endpoint=MINIO_ENDPOINT,
+            access_key=MINIO_ACCESS_KEY,
+            secret_key=MINIO_SECRET_KEY,
+            secure=MINIO_SECURE,
+        )
+    return _minio_service
 
 
 async def get_current_user(
-    credentials: HTTPAuthCredentials = Depends(security),
+    authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ) -> User:
     """
@@ -22,16 +43,31 @@ async def get_current_user(
     NO authorization checks - only authentication is required.
 
     Args:
-        credentials: Authorization header credentials (Bearer token)
+        authorization: Authorization header (Bearer token)
         db: Database session
 
     Returns:
         User object
 
     Raises:
-        HTTPException: 401 if token is invalid or user not found
+        HTTPException: 403 if no token provided, 401 if token invalid
     """
-    token = credentials.credentials
+    # Check if authorization header exists
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing authorization header",
+        )
+
+    # Check Bearer prefix
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid authorization header format",
+        )
+
+    # Extract token
+    token = authorization[7:]  # Remove "Bearer " prefix
 
     # Decode the token
     payload = decode_access_token(token)
@@ -42,9 +78,18 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Extract user_id from token payload
-    user_id: Optional[int] = payload.get("sub")
-    if user_id is None:
+    # Extract user_id from token payload (convert from string to int)
+    user_id_str: Optional[str] = payload.get("sub")
+    if user_id_str is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user_id = int(user_id_str)
+    except (ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",

@@ -1,10 +1,36 @@
 """FastAPI application initialization."""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.config import API_TITLE, API_VERSION, CORS_ORIGINS
+from contextlib import asynccontextmanager
+from app.config import API_TITLE, API_VERSION, CORS_ORIGINS, MINIO_IMAGE_BUCKET, MINIO_AUDIO_BUCKET
 from app.database import init_db
 from app.logger import logger
-from app.routers import auth
+from app.routers import auth, books
+from app.dependencies import get_minio_client
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifecycle manager.
+    Startup: Initialize MinIO buckets
+    Shutdown: Cleanup resources
+    """
+    # Startup
+    logger.info("Starting up OCR Workbench...")
+    try:
+        minio_client = get_minio_client()
+        await minio_client.ensure_buckets_exist([MINIO_IMAGE_BUCKET, MINIO_AUDIO_BUCKET])
+        logger.info("MinIO buckets initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize MinIO: {e}")
+        raise
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down OCR Workbench...")
+
 
 # Initialize database
 init_db()
@@ -14,6 +40,7 @@ app = FastAPI(
     title=API_TITLE,
     version=API_VERSION,
     description="Multi-user OCR and audio transcription platform with Gemini 3 Flash",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -28,6 +55,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(books.router)
 
 
 # Health check endpoint
