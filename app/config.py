@@ -45,3 +45,23 @@ DEFAULT_PAGE_SIZE = 50
 
 # Processing
 MAX_CONCURRENT_WORKERS = 5
+
+class Settings:
+    """Settings class for easy access to configuration."""
+    
+    def __init__(self):
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        self.minio_endpoint = MINIO_ENDPOINT
+        self.minio_access_key = MINIO_ACCESS_KEY
+        self.minio_secret_key = MINIO_SECRET_KEY
+
+
+_settings = None
+
+
+def get_settings() -> Settings:
+    """Get or create global settings instance."""
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings

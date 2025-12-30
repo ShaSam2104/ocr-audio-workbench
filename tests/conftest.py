@@ -6,12 +6,53 @@ from fastapi.testclient import TestClient
 from app.database import Base, get_db
 from app.main import app
 from app.models.user import User
-from app.auth import hash_password
+from app.models.hierarchy import Book, Chapter
+from app.auth import hash_password, create_access_token
 from app.dependencies import get_minio_client
 from tests.fixtures.minio_mock import MockMinIOService
 
 # Use in-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite:///:memory:"
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+
+def create_test_user(session, username: str) -> User:
+    """Create a test user and return it with a valid token in header format."""
+    user = User(
+        username=username,
+        hashed_password=hash_password("testpassword123"),
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+def create_test_book_and_chapter(session, book_name: str, chapter_name: str) -> tuple:
+    """Create a test book and chapter."""
+    book = Book(
+        name=book_name,
+        description="Test book",
+    )
+    session.add(book)
+    session.commit()
+    session.refresh(book)
+    
+    chapter = Chapter(
+        book_id=book.id,
+        name=chapter_name,
+        description="Test chapter",
+        sequence_order=1,
+    )
+    session.add(chapter)
+    session.commit()
+    session.refresh(chapter)
+    
+    return book, chapter
 
 
 @pytest.fixture(scope="session")
