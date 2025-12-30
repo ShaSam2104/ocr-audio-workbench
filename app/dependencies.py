@@ -1,6 +1,7 @@
 """Dependency injection for FastAPI endpoints."""
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Header
+from fastapi import Depends, HTTPException, status, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User
@@ -32,7 +33,7 @@ def get_minio_client() -> MinIOService:
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db),
 ) -> User:
     """
@@ -52,22 +53,14 @@ async def get_current_user(
     Raises:
         HTTPException: 403 if no token provided, 401 if token invalid
     """
-    # Check if authorization header exists
-    if not authorization:
+    # If HTTPBearer returned no credentials (auto_error=False), treat as missing
+    if not credentials or not getattr(credentials, "credentials", None):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing authorization header",
+            detail="Missing authorization credentials",
         )
 
-    # Check Bearer prefix
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid authorization header format",
-        )
-
-    # Extract token
-    token = authorization[7:]  # Remove "Bearer " prefix
+    token = credentials.credentials
 
     # Decode the token
     payload = decode_access_token(token)
