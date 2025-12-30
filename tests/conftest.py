@@ -7,6 +7,8 @@ from app.database import Base, get_db
 from app.main import app
 from app.models.user import User
 from app.auth import hash_password
+from app.dependencies import get_minio_client
+from tests.fixtures.minio_mock import MockMinIOService
 
 # Use in-memory SQLite for tests
 TEST_DATABASE_URL = "sqlite:///:memory:"
@@ -35,49 +37,75 @@ def test_db_session(test_engine):
     connection.close()
 
 
-@pytest.fixture
-def override_get_db(test_db_session):
-    """Override FastAPI get_db dependency."""
+@pytest.fixture(scope="function")
+def mock_minio_service():
+    """Create mock MinIO service for testing."""
+    return MockMinIOService()
+
+
+@pytest.fixture(scope="function")
+def db_session_with_client(test_engine, mock_minio_service):
+    """Create test database session with client override for each test."""
+    connection = test_engine.connect()
+    transaction = connection.begin()
+    session = sessionmaker(autocommit=False, autoflush=False, bind=connection)()
+
+    # Override the get_db dependency with this session
     def _override_get_db():
         try:
-            yield test_db_session
+            yield session
         finally:
             pass
 
+    # Override MinIO dependency with mock service
+    def _override_get_minio_client():
+        return mock_minio_service
+
     app.dependency_overrides[get_db] = _override_get_db
-    yield
+    app.dependency_overrides[get_minio_client] = _override_get_minio_client
+    yield session
     app.dependency_overrides.clear()
+    
+    session.close()
+    transaction.rollback()
+    connection.close()
 
 
 @pytest.fixture
-def client(override_get_db):
-    """FastAPI test client."""
+def db_session(db_session_with_client):
+    """Alias for test database session."""
+    return db_session_with_client
+
+
+@pytest.fixture
+def client(db_session_with_client):
+    """FastAPI test client with database session override."""
     return TestClient(app)
 
 
 @pytest.fixture
-def test_user(test_db_session) -> User:
+def test_user(db_session_with_client) -> User:
     """Create a test user."""
     user = User(
         username="testuser",
         hashed_password=hash_password("testpassword123"),
     )
-    test_db_session.add(user)
-    test_db_session.commit()
-    test_db_session.refresh(user)
+    db_session_with_client.add(user)
+    db_session_with_client.commit()
+    db_session_with_client.refresh(user)
     return user
 
 
 @pytest.fixture
-def test_user_2(test_db_session) -> User:
+def test_user_2(db_session_with_client) -> User:
     """Create a second test user."""
     user = User(
         username="testuser2",
         hashed_password=hash_password("password456"),
     )
-    test_db_session.add(user)
-    test_db_session.commit()
-    test_db_session.refresh(user)
+    db_session_with_client.add(user)
+    db_session_with_client.commit()
+    db_session_with_client.refresh(user)
     return user
 
 
