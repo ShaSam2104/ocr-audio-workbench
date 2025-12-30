@@ -12,11 +12,12 @@ class Audio(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     chapter_id = Column(Integer, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
-    file_path = Column(String(500), nullable=False)  # Path to audio file
+    object_key = Column(String(500), nullable=False)  # Path in MinIO: audio/{chapter_id}/{audio_id}.{ext}
     filename = Column(String(255), nullable=False)
     sequence_number = Column(Integer, nullable=False)  # Per chapter scope
     duration_seconds = Column(Integer, nullable=True)  # Audio duration in seconds
     audio_format = Column(String(50), nullable=True)  # mp3, wav, m4a, ogg, flac
+    file_size = Column(Integer, nullable=True)  # Size in bytes
     detected_language = Column(String(50), nullable=True)
     transcription_status = Column(
         String(50), default="pending", nullable=False
