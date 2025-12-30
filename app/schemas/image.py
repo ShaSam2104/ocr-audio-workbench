@@ -33,9 +33,12 @@ class ImageSchema(BaseModel):
 
     id: int
     chapter_id: int
+    object_key: str
     filename: str
     sequence_number: int
     page_number: Optional[int] = None
+    file_size: Optional[int] = None
+    file_hash: Optional[str] = None
     detected_language: Optional[str] = None
     ocr_status: str  # pending, processing, completed, failed
     is_cropped: bool
