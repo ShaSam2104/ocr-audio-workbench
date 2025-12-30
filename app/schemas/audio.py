@@ -31,10 +31,12 @@ class AudioSchema(BaseModel):
 
     id: int
     chapter_id: int
+    object_key: str
     filename: str
     sequence_number: int
     duration_seconds: Optional[int] = None
     audio_format: Optional[str] = None  # mp3, wav, m4a, ogg, flac
+    file_size: Optional[int] = None
     detected_language: Optional[str] = None
     transcription_status: str  # pending, processing, completed, failed
     created_at: datetime
