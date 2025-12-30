@@ -1,4 +1,4 @@
 """Routers package."""
-from app.routers import auth, books
+from app.routers import auth, books, chapters
 
-__all__ = ["auth", "books"]
+__all__ = ["auth", "books", "chapters"]
