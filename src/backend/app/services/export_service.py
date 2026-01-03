@@ -1,4 +1,5 @@
 """Export service for generating .docx and .txt files with OCR and transcript data."""
+import re
 import tempfile
 from pathlib import Path
 from typing import List, Tuple
@@ -26,49 +27,97 @@ class ExportService:
         """
         self.minio_service = minio_service
 
-    def _parse_markdown_formatting(self, text: str) -> List[Tuple[str, dict]]:
+    def _parse_markdown_to_docx_runs(self, text: str, paragraph) -> None:
         """
-        Parse markdown-style formatting tags and return list of (text, format_dict) tuples.
-
+        Parse markdown formatting and add formatted runs to a docx paragraph.
+        
         Supports:
         - **bold text** -> bold
         - *italic text* -> italic
-        - __underline text__ -> underline
-        - ~~strikethrough~~ -> strikethrough
-        - ^superscript^ -> superscript
-        - ~subscript~ -> subscript
+        - `code text` -> monospaced
+        - # Heading -> h1 (handled separately)
+        - - bullet -> bullet (handled separately)
 
         Args:
             text: Text with markdown tags
-
-        Returns:
-            List of (text_segment, format_dict) tuples
+            paragraph: python-docx paragraph object to add runs to
         """
-        # For now, return simple list of text segments
-        # A full implementation would parse the markdown tags
-        # For simplicity, we'll use the text as-is and let users preserve formatting manually
-        return [(text, {})]
+        if not text:
+            return
 
-    def _add_formatted_text_to_paragraph(self, paragraph, text: str, bold: bool = False, italic: bool = False, underline: bool = False) -> None:
+        # Pattern to find markdown formatting
+        # This regex finds: **bold**, *italic*, `code`
+        pattern = r'(\*\*.*?\*\*|\*.*?\*|`.*?`)'
+        
+        last_end = 0
+        for match in re.finditer(pattern, text):
+            # Add plain text before this match
+            if match.start() > last_end:
+                paragraph.add_run(text[last_end:match.start()])
+            
+            # Add formatted text
+            matched_text = match.group(0)
+            if matched_text.startswith('**') and matched_text.endswith('**'):
+                # Bold
+                run = paragraph.add_run(matched_text[2:-2])
+                run.bold = True
+            elif matched_text.startswith('*') and matched_text.endswith('*'):
+                # Italic
+                run = paragraph.add_run(matched_text[1:-1])
+                run.italic = True
+            elif matched_text.startswith('`') and matched_text.endswith('`'):
+                # Code/monospaced
+                run = paragraph.add_run(matched_text[1:-1])
+                run.font.name = 'Courier New'
+                run.font.size = Pt(10)
+            
+            last_end = match.end()
+        
+        # Add remaining plain text
+        if last_end < len(text):
+            paragraph.add_run(text[last_end:])
+
+    def _add_markdown_text_to_docx(self, doc: Document, text: str) -> None:
         """
-        Add formatted text to a docx paragraph, parsing markdown tags.
+        Add markdown-formatted text to a docx document.
+        
+        Handles:
+        - # Heading 1
+        - ## Heading 2
+        - ### Heading 3
+        - **bold**, *italic*, `code`
+        - Empty lines (paragraph breaks)
+        - Regular paragraphs
 
         Args:
-            paragraph: python-docx paragraph object
-            text: Text with markdown formatting tags
-            bold: Default bold style
-            italic: Default italic style
-            underline: Default underline style
+            doc: python-docx Document object
+            text: Text with markdown formatting
         """
-        # Simple approach: add the text as-is
-        # A full implementation would parse markdown tags like **bold**, *italic*, etc.
-        run = paragraph.add_run(text)
-        if bold:
-            run.bold = True
-        if italic:
-            run.italic = True
-        if underline:
-            run.underline = True
+        lines = text.split('\n')
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            if not line_stripped:
+                # Empty line - add spacing
+                doc.add_paragraph()
+                continue
+            
+            # Check for headings
+            if line_stripped.startswith('# '):
+                doc.add_heading(line_stripped[2:].strip(), level=1)
+            elif line_stripped.startswith('## '):
+                doc.add_heading(line_stripped[3:].strip(), level=2)
+            elif line_stripped.startswith('### '):
+                doc.add_heading(line_stripped[4:].strip(), level=3)
+            elif line_stripped.startswith('- '):
+                # Bullet point
+                paragraph = doc.add_paragraph(line_stripped[2:].strip(), style='List Bullet')
+                self._parse_markdown_to_docx_runs(line_stripped[2:].strip(), paragraph)
+            else:
+                # Regular paragraph with potential markdown formatting
+                paragraph = doc.add_paragraph()
+                self._parse_markdown_to_docx_runs(line_stripped, paragraph)
 
     def generate_docx(
         self,
@@ -79,7 +128,7 @@ class ExportService:
         include_images: bool = True,
     ) -> str:
         """
-        Generate .docx file with OCR text and transcripts.
+        Generate .docx file with OCR text and transcripts with proper markdown formatting.
 
         Args:
             images: List of Image objects with sequence numbers (sorted by sequence)
@@ -104,8 +153,8 @@ class ExportService:
                 # Find OCR text for this image
                 ocr_text = next((o for o in ocr_texts if o.image_id == img.id), None)
                 if ocr_text:
-                    # Add formatted text (preserving markdown tags)
-                    self._add_formatted_text_to_paragraph(doc.add_paragraph(), ocr_text.raw_text_with_formatting)
+                    # Add markdown-formatted text
+                    self._add_markdown_text_to_docx(doc, ocr_text.raw_text_with_formatting)
                 else:
                     doc.add_paragraph("[No OCR text available]")
 
@@ -127,8 +176,8 @@ class ExportService:
                 # Find transcript for this audio
                 transcript = next((t for t in transcripts if t.audio_id == audio.id), None)
                 if transcript:
-                    # Add formatted text (preserving markdown tags)
-                    self._add_formatted_text_to_paragraph(doc.add_paragraph(), transcript.raw_text_with_formatting)
+                    # Add markdown-formatted text
+                    self._add_markdown_text_to_docx(doc, transcript.raw_text_with_formatting)
                 else:
                     doc.add_paragraph("[No transcript available]")
 

@@ -13,6 +13,7 @@ class Book(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
+    languages = Column(String(255), nullable=True)  # Comma-separated language codes (e.g., "en,hi,gu")
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
 

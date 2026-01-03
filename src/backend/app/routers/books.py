@@ -70,17 +70,23 @@ async def create_book(
     Create a new book - NO user_id assignment (shared across all users).
 
     Args:
-        request: Book creation data
+        request: Book creation data (name, description, languages)
         current_user: Current authenticated user
         db: Database session
 
     Returns:
         Created book
     """
+    # Convert languages list to comma-separated string
+    languages_str = None
+    if request.languages:
+        languages_str = ",".join(request.languages)
+    
     # Create new book WITHOUT user_id
     new_book = Book(
         name=request.name,
         description=request.description,
+        languages=languages_str,
     )
 
     db.add(new_book)

@@ -73,10 +73,10 @@ def _process_audios_in_background(
     task_id: str,
     audio_ids: List[int],
     language_hint: Optional[str],
-    db: Session,
     minio_service: MinIOService,
     gemini_service: GeminiService,
     task_manager,
+    languages: Optional[List[str]] = None,
 ):
     """
     Background job to process audios for transcription.
@@ -86,87 +86,93 @@ def _process_audios_in_background(
         task_id: Task ID for tracking
         audio_ids: List of audio IDs to process
         language_hint: Optional language hint for transcription
-        db: Database session
         minio_service: MinIO service for file operations
         gemini_service: Gemini service for transcription
         task_manager: Audio task manager for status tracking
+        languages: Optional list of language codes from the book
     """
-    logger.info(f"Background audio transcription job started for task {task_id} with {len(audio_ids)} audios")
-    task_manager.start_processing(task_id)
+    # Create a new database session for this background thread
+    from app.database import SessionLocal
+    db = SessionLocal()
+    
+    try:
+        logger.info(f"Background audio transcription job started for task {task_id} with {len(audio_ids)} audios")
+        task_manager.start_processing(task_id)
 
-    for audio_id in audio_ids:
-        try:
-            # Mark audio as processing
-            task_manager.start_audio_processing(task_id, audio_id)
-
-            # Verify audio exists
-            audio: Optional[Audio] = db.query(Audio).filter(Audio.id == audio_id).first()
-            if not audio:
-                task_manager.fail_audio(task_id, audio_id, f"Audio {audio_id} not found")
-                continue
-
-            logger.debug(f"Processing audio {audio_id} for task {task_id}")
-
-            # Download audio from MinIO to temp file
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
-                tmp_path = tmp_file.name
-
+        for audio_id in audio_ids:
             try:
-                # Download from MinIO (run async in event loop since we're in a thread)
-                asyncio.run(minio_service.download_file(
-                    bucket="audio",
-                    object_key=audio.object_key,
-                    local_path=tmp_path,
-                ))
+                # Mark audio as processing
+                task_manager.start_audio_processing(task_id, audio_id)
 
-                # Transcribe using Gemini audio mode
-                raw_text, detected_language, processing_time_ms = gemini_service.transcribe_audio(
-                    tmp_path,
-                    language_hint=language_hint,
-                )
+                # Verify audio exists
+                audio: Optional[Audio] = db.query(Audio).filter(Audio.id == audio_id).first()
+                if not audio:
+                    task_manager.fail_audio(task_id, audio_id, f"Audio {audio_id} not found")
+                    continue
 
-                # Store transcript result in database
-                transcript = AudioTranscript(
-                    audio_id=audio_id,
-                    raw_text_with_formatting=raw_text,
-                    plain_text_for_search=raw_text,  # In production, remove markdown tags
-                    detected_language=detected_language,
-                    processing_time_ms=processing_time_ms,
-                )
-                db.add(transcript)
+                logger.debug(f"Processing audio {audio_id} for task {task_id}")
 
-                # Update audio status
-                audio.transcription_status = "completed"
-                audio.detected_language = detected_language
-                db.commit()
+                # Download audio from MinIO to temp file
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
 
-                # Mark as completed in task manager
-                task_manager.complete_audio(task_id, audio_id)
-                logger.info(f"Audio {audio_id} transcription completed in {processing_time_ms}ms")
+                try:
+                    # Download from MinIO (run async in event loop since we're in a thread)
+                    asyncio.run(minio_service.download_file(
+                        bucket="audio",
+                        object_key=audio.object_key,
+                        local_path=tmp_path,
+                    ))
 
-            finally:
-                # Clean up temp file
-                Path(tmp_path).unlink(missing_ok=True)
+                    # Transcribe using Gemini audio mode with language context
+                    raw_text, detected_language, processing_time_ms = gemini_service.transcribe_audio(
+                        tmp_path,
+                        language_hint=language_hint,
+                        languages=languages,
+                    )
 
-        except Exception as e:
-            error_msg = f"Error processing audio {audio_id}: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            task_manager.fail_audio(task_id, audio_id, error_msg)
-            
-            # Try to update audio status in DB
-            try:
-                audio = db.query(Audio).filter(Audio.id == audio_id).first()
-                if audio:
-                    audio.transcription_status = "failed"
+                    # Store transcript result in database
+                    transcript = AudioTranscript(
+                        audio_id=audio_id,
+                        raw_text_with_formatting=raw_text,
+                        plain_text_for_search=raw_text,  # In production, remove markdown tags
+                        detected_language=detected_language,
+                        processing_time_ms=processing_time_ms,
+                    )
+                    db.add(transcript)
+
+                    # Update audio status
+                    audio.transcription_status = "completed"
+                    audio.detected_language = detected_language
                     db.commit()
-            except Exception as db_error:
-                logger.error(f"Failed to update audio status in DB: {db_error}")
 
-    logger.info(f"Background audio transcription job completed for task {task_id}")
+                    # Mark as completed in task manager
+                    task_manager.complete_audio(task_id, audio_id)
+                    logger.info(f"Audio {audio_id} transcription completed in {processing_time_ms}ms")
 
+                finally:
+                    # Clean up temp file
+                    Path(tmp_path).unlink(missing_ok=True)
 
-# ============================================================================
-# ENDPOINTS
+            except Exception as e:
+                error_msg = f"Error processing audio {audio_id}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                task_manager.fail_audio(task_id, audio_id, error_msg)
+                
+                # Try to update audio status in DB
+                try:
+                    audio = db.query(Audio).filter(Audio.id == audio_id).first()
+                    if audio:
+                        audio.transcription_status = "failed"
+                        db.commit()
+                except Exception as db_error:
+                    logger.error(f"Failed to update audio status in DB: {db_error}")
+
+        logger.info(f"Background audio transcription job completed for task {task_id}")
+    
+    finally:
+        # Always close the database session
+        db.close()
 # ============================================================================
 
 
@@ -194,7 +200,7 @@ async def transcribe_audios(
     """
     logger.info(f"Audio transcription request for {len(request.audio_ids)} audios from user {current_user.id}")
 
-    # Validate all audios exist
+    # Validate all audios exist and get book languages
     existing_audios = db.query(Audio).filter(Audio.id.in_(request.audio_ids)).all()
     if len(existing_audios) != len(request.audio_ids):
         missing_ids = set(request.audio_ids) - {audio.id for audio in existing_audios}
@@ -203,6 +209,17 @@ async def transcribe_audios(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Audios not found: {missing_ids}",
         )
+
+    # Get book languages from the first audio's chapter's book
+    languages = None
+    if existing_audios:
+        from app.models.hierarchy import Book
+        first_audio = existing_audios[0]
+        chapter = first_audio.chapter
+        if chapter and chapter.book:
+            if chapter.book.languages:
+                languages = [lang.strip() for lang in chapter.book.languages.split(",")]
+            logger.debug(f"Book languages: {languages}")
 
     # Create task in task manager
     task_manager = get_audio_task_manager()
@@ -226,10 +243,10 @@ async def transcribe_audios(
         task_id,
         request.audio_ids,
         request.language_hint,
-        db,
         minio_service,
         gemini_service,
         task_manager,
+        languages=languages,
     )
 
     logger.info(f"Audio transcription task {task_id} submitted to background queue")

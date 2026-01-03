@@ -1,7 +1,8 @@
 """Google Gemini 3 Flash API wrapper for OCR and text extraction."""
 import time
+import mimetypes
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import google.genai as genai
 from PIL import Image
 from app.logger import logger
@@ -10,12 +11,32 @@ from app.logger import logger
 class GeminiService:
     """Wrapper around Google Gemini 3 Flash API for image OCR and audio transcription."""
 
-    EXTRACTION_PROMPT = """Analyze the provided image. Extract all text exactly as it appears in the image.
-Maintain the original line breaks, paragraph structure, spacing, and tabular layouts.
-Do not add any extra commentary, headers, or explanations.
-Return only the extracted, formatted text."""
+    EXTRACTION_PROMPT = """Extract all text from the image EXACTLY as it appears. Preserve the original structure and layout.
+
+CRITICAL INSTRUCTIONS:
+1. TEXT CONTENT: Extract every single word, number, and character exactly as shown
+2. LINE BREAKS: Each new line in the image = new line in output. This is ESSENTIAL.
+3. SPACING: Preserve original spacing and indentation
+4. TABLES: 
+   - If the image contains a table, extract it row by row
+   - Each new row starts on a new line
+   - Separate columns with | characters
+   - Keep all text content even if cells are partially filled
+   - Put multi-line cell content on new lines within the cell (use newlines)
+5. NO MARKDOWN FORMATTING: Do not add **bold**, *italic*, or any other markdown unless visibly emphasized
+6. MULTILINGUAL TEXT: Preserve all scripts exactly (Hindi, Gujarati, English, etc.)
+7. SPECIAL CHARACTERS: Keep all diacritics and punctuation exactly as shown
+8. STRUCTURE: Preserve the layout - if something is indented, keep that indentation
+
+MOST IMPORTANT: Output each line exactly as it appears in the image. Do not try to be smart about formatting.
+Output ONLY the extracted text with proper line breaks. No explanations."""
 
     TRANSCRIPTION_PROMPT = """Transcribe the provided audio file. Return only the transcribed text.
+Format the output as markdown with proper formatting:
+- Use **bold** for emphasized words
+- Use *italic* for stressed words
+- Use # for new sections or topics
+- Use - for bullet points where appropriate
 Maintain the original structure, paragraphs, and punctuation.
 Do not add any extra commentary or headers."""
 
@@ -27,19 +48,20 @@ Do not add any extra commentary or headers."""
             api_key: Google API key for Gemini
         """
         self.client = genai.Client(api_key=api_key)
-        logger.info("GeminiService initialized with gemini-2.0-flash model")
+        logger.info("GeminiService initialized with gemini-3.0-flash model")
 
-    def extract_text_from_image(self, image_path: str) -> Tuple[str, str, int]:
+    def extract_text_from_image(self, image_path: str, languages: Optional[List[str]] = None) -> Tuple[str, str, int]:
         """
         Extract text from a single image using Gemini Vision.
         Uses the same approach as the notebook - load PIL image and pass to generate_content.
         
         Args:
             image_path: Path to the image file
+            languages: Optional list of languages to expect in the image (e.g., ['hi', 'gu'])
             
         Returns:
             Tuple of:
-            - raw_text_with_formatting: Text with formatting
+            - raw_text_with_formatting: Text with markdown formatting
             - detected_language: Detected language code (e.g., 'en', 'es')
             - processing_time_ms: Processing time in milliseconds
             
@@ -56,13 +78,33 @@ Do not add any extra commentary or headers."""
         # Load image using PIL (same as your notebook)
         image = Image.open(str(image_path))
 
+        # Build prompt with language hints if provided
+        prompt = self.EXTRACTION_PROMPT
+        if languages:
+            language_names = {
+                'en': 'English',
+                'hi': 'Hindi',
+                'gu': 'Gujarati',
+                'ja': 'Japanese',
+                'zh': 'Chinese',
+                'ko': 'Korean',
+                'ru': 'Russian',
+                'es': 'Spanish',
+                'fr': 'French',
+                'de': 'German',
+            }
+            lang_names = [language_names.get(lang, lang) for lang in languages]
+            prompt += f"\n\nThe image contains text in: {', '.join(lang_names)}. Preserve the original language and script exactly."
+        
+        prompt += "\n\nIMPORTANT: If the image has a table, keep it as a clear row-by-row structure. If it has mixed text and table, extract both maintaining their original layout."
+
         # Call Gemini with prompt and image (same pattern as your notebook)
         start_time = time.time()
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3-pro-preview",
                 contents=[
-                    self.EXTRACTION_PROMPT,
+                    prompt,
                     image,
                 ],
             )
@@ -72,7 +114,7 @@ Do not add any extra commentary or headers."""
             if not response.text:
                 raise ValueError("Gemini returned empty response")
 
-            raw_text = response.text.strip()
+            raw_text = self._normalize_response_text(response.text).strip()
             detected_language = self._detect_language(raw_text)
 
             logger.info(
@@ -87,7 +129,7 @@ Do not add any extra commentary or headers."""
             raise ValueError(f"Gemini API error: {str(e)}")
 
     def transcribe_audio(
-        self, audio_path: str, language_hint: Optional[str] = None
+        self, audio_path: str, language_hint: Optional[str] = None, languages: Optional[List[str]] = None
     ) -> Tuple[str, str, int]:
         """
         Transcribe audio file to text using Gemini 3 Flash audio mode.
@@ -95,10 +137,11 @@ Do not add any extra commentary or headers."""
         Args:
             audio_path: Path to the audio file
             language_hint: Optional language hint (e.g., 'en', 'hi', 'gu')
+            languages: Optional list of languages expected in the audio
             
         Returns:
             Tuple of:
-            - raw_text_with_formatting: Transcribed text
+            - raw_text_with_formatting: Transcribed text in markdown format
             - detected_language: Detected language code
             - processing_time_ms: Processing time in milliseconds
             
@@ -112,31 +155,35 @@ Do not add any extra commentary or headers."""
 
         logger.debug(f"Transcribing audio file: {audio_path}")
 
-        # Determine MIME type from file extension
-        ext = audio_path.suffix.lower()
-        mime_types = {
-            ".mp3": "audio/mpeg",
-            ".wav": "audio/wav",
-            ".m4a": "audio/mp4",
-            ".ogg": "audio/ogg",
-            ".flac": "audio/flac",
-        }
-        mime_type = mime_types.get(ext, "audio/mpeg")
-
         start_time = time.time()
         try:
             # Upload file to Gemini (required for audio)
+            # The library should detect file type from path/extension
             logger.debug(f"Uploading audio file: {audio_path}")
-            with open(str(audio_path), "rb") as f:
-                audio_file = self.client.files.upload(
-                    file=(audio_path.name, f, mime_type)
-                )
+            
+            # Upload using the Path object directly
+            audio_file = self.client.files.upload(file=audio_path)
             logger.debug(f"Audio file uploaded to Gemini: {audio_file.name}")
 
             # Build prompt with language hint if provided
             prompt = self.TRANSCRIPTION_PROMPT
             if language_hint:
                 prompt += f"\nLanguage hint: {language_hint}"
+            elif languages:
+                language_names = {
+                    'en': 'English',
+                    'hi': 'Hindi',
+                    'gu': 'Gujarati',
+                    'ja': 'Japanese',
+                    'zh': 'Chinese',
+                    'ko': 'Korean',
+                    'ru': 'Russian',
+                    'es': 'Spanish',
+                    'fr': 'French',
+                    'de': 'German',
+                }
+                lang_names = [language_names.get(lang, lang) for lang in languages]
+                prompt += f"\nExpected languages: {', '.join(lang_names)}. Preserve any multilingual content."
 
             # Transcribe using Gemini audio mode
             response = self.client.models.generate_content(
@@ -144,15 +191,15 @@ Do not add any extra commentary or headers."""
                 contents=[prompt, audio_file],
             )
 
-            # Clean up uploaded file
-            self.client.files.delete(audio_file.name)
+            # Clean up uploaded file using keyword argument
+            self.client.files.delete(name=audio_file.name)
 
             processing_time_ms = int((time.time() - start_time) * 1000)
 
             if not response.text:
                 raise ValueError("Gemini returned empty response for audio")
 
-            raw_text = response.text.strip()
+            raw_text = self._normalize_response_text(response.text).strip()
             detected_language = language_hint or self._detect_language(raw_text)
 
             logger.info(
@@ -165,6 +212,55 @@ Do not add any extra commentary or headers."""
         except Exception as e:
             logger.error(f"Gemini audio transcription error: {str(e)}")
             raise ValueError(f"Gemini audio transcription error: {str(e)}")
+
+    def _normalize_response_text(self, text: str) -> str:
+        """
+        Normalize response text by converting escaped characters to actual characters
+        and fixing table structure issues.
+        
+        Args:
+            text: Raw response text from Gemini
+            
+        Returns:
+            Normalized text with proper formatting
+        """
+        if not text:
+            return text
+        
+        # Convert literal escape sequences to actual characters
+        text = text.replace('\\n', '\n')
+        text = text.replace('\\t', '\t')
+        text = text.replace('\\r', '\r')
+        
+        # Handle any double-escaped sequences
+        while '\\n' in text or '\\t' in text:
+            text = text.replace('\\n', '\n')
+            text = text.replace('\\t', '\t')
+        
+        # Process lines and fix table structure
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for i, line in enumerate(lines):
+            # For table lines (containing |), normalize the structure
+            if '|' in line:
+                # Split by pipe and clean each cell
+                cells = line.split('|')
+                cleaned_cells = [cell.strip() for cell in cells]
+                # Rejoin with proper spacing
+                line = ' | '.join(cleaned_cells)
+            else:
+                # For non-table lines, remove multiple spaces within words but preserve spacing between words
+                import re
+                # Remove spaces between Devanagari characters (OCR artifacts)
+                line = re.sub(r'([क-ह]) +([क-ह])', r'\1\2', line)
+                # Remove multiple spaces between words (but keep at least one)
+                line = re.sub(r'  +', ' ', line)
+            
+            cleaned_lines.append(line)
+        
+        text = '\n'.join(cleaned_lines)
+        return text
 
     def _detect_language(self, text: str) -> str:
         """
