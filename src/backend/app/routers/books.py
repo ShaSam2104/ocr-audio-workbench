@@ -13,6 +13,7 @@ from app.schemas.hierarchy import (
     ChapterCreateSchema,
     ChapterUpdateSchema,
 )
+from app.schemas.response import MessageResponse
 from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/books", tags=["books"])
@@ -160,12 +161,12 @@ async def update_book(
     return BookSchema.model_validate(book)
 
 
-@router.delete("/{book_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{book_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 async def delete_book(
     book_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict:
+) -> MessageResponse:
     """
     Delete a book - NO authorization check (all users can delete).
 
@@ -190,7 +191,7 @@ async def delete_book(
     db.delete(book)
     db.commit()
 
-    return {"message": f"Book {book_id} deleted successfully"}
+    return MessageResponse(message=f"Book {book_id} deleted successfully")
 
 
 # ============================================================================
@@ -392,13 +393,13 @@ async def update_chapter(
     return ChapterSchema.model_validate(chapter)
 
 
-@router.delete("/{book_id}/chapters/{chapter_id}", status_code=status.HTTP_200_OK)
+@router.delete("/{book_id}/chapters/{chapter_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 async def delete_chapter(
     book_id: int,
     chapter_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict:
+) -> MessageResponse:
     """
     Delete a chapter.
 
@@ -436,4 +437,4 @@ async def delete_chapter(
     db.delete(chapter)
     db.commit()
 
-    return {"message": f"Chapter {chapter_id} deleted successfully"}
+    return MessageResponse(message=f"Chapter {chapter_id} deleted successfully")

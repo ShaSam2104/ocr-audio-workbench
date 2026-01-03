@@ -9,6 +9,7 @@ from app.schemas.hierarchy import (
     ChapterCreateSchema,
     ChapterUpdateSchema,
 )
+from app.schemas.response import MessageResponse
 from app.dependencies import get_current_user
 
 router = APIRouter(tags=["chapters"])
@@ -170,13 +171,13 @@ async def update_chapter(
     return ChapterSchema.model_validate(chapter)
 
 
-@router.delete("/books/{book_id}/chapters/{chapter_id}", status_code=status.HTTP_200_OK)
+@router.delete("/books/{book_id}/chapters/{chapter_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
 async def delete_chapter(
     book_id: int,
     chapter_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> dict:
+) -> MessageResponse:
     """
     Delete a chapter - cascades to delete images and ocr_texts.
 
@@ -215,4 +216,4 @@ async def delete_chapter(
     db.delete(chapter)
     db.commit()
 
-    return {"message": f"Chapter {chapter_id} deleted successfully"}
+    return MessageResponse(message=f"Chapter {chapter_id} deleted successfully")

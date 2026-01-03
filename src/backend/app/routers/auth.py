@@ -5,6 +5,7 @@ from datetime import timedelta
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import LoginSchema, TokenSchema, UserSchema
+from app.schemas.response import MessageResponse
 from app.auth import hash_password, verify_password, create_access_token
 from app.config import ACCESS_TOKEN_EXPIRE_MINUTES
 
@@ -59,15 +60,15 @@ async def login(
     }
 
 
-@router.post("/logout", status_code=status.HTTP_200_OK)
-async def logout() -> dict:
+@router.post("/logout", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def logout() -> MessageResponse:
     """
     Logout endpoint - optional (token invalidation is handled client-side).
 
     Returns:
         Confirmation message
     """
-    return {"message": "Logged out successfully"}
+    return MessageResponse(message="Logged out successfully")
 
 
 @router.post("/register", response_model=UserSchema, status_code=status.HTTP_201_CREATED)

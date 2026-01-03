@@ -30,18 +30,9 @@ _executor = ThreadPoolExecutor(max_workers=5)
 # ============================================================================
 
 
-class CropCoordinates(BaseModel):
-    """Image crop coordinates."""
-    x: int = Field(..., ge=0, description="X coordinate (pixels)")
-    y: int = Field(..., ge=0, description="Y coordinate (pixels)")
-    width: int = Field(..., gt=0, description="Width (pixels)")
-    height: int = Field(..., gt=0, description="Height (pixels)")
-
-
 class OCRProcessRequest(BaseModel):
     """OCR processing request."""
     image_ids: List[int] = Field(..., description="List of image IDs to process", min_length=1)
-    crop_coordinates: Optional[CropCoordinates] = Field(None, description="Optional crop coordinates")
 
 
 class ImageProcessingStatus(BaseModel):
@@ -80,7 +71,6 @@ class OCRProcessResponse(BaseModel):
 def _process_images_in_background(
     task_id: str,
     image_ids: List[int],
-    crop_coordinates: Optional[dict],
     db: Session,
     minio_service: MinIOService,
     gemini_service: GeminiService,
@@ -93,7 +83,6 @@ def _process_images_in_background(
     Args:
         task_id: Task ID for tracking
         image_ids: List of image IDs to process
-        crop_coordinates: Optional crop coordinates
         db: Database session
         minio_service: MinIO service for file operations
         gemini_service: Gemini service for OCR
@@ -126,12 +115,6 @@ def _process_images_in_background(
                     object_key=image.object_key,
                     local_path=tmp_path,
                 ))
-
-                # TODO: Apply cropping if coordinates provided
-                # (This would require image processing library like Pillow)
-                if crop_coordinates:
-                    logger.debug(f"Crop coordinates provided for image {image_id}: {crop_coordinates}")
-                    # Implementation would use PIL.Image.crop()
 
                 # Extract text using Gemini
                 raw_text, detected_language, processing_time_ms = gemini_service.extract_text_from_image(
@@ -234,16 +217,11 @@ async def process_images_ocr(
     settings = get_settings()
     gemini_service = GeminiService(api_key=settings.gemini_api_key)
 
-    crop_coords = None
-    if request.crop_coordinates:
-        crop_coords = request.crop_coordinates.model_dump()
-
     # Submit to thread pool - fire and forget
     _executor.submit(
         _process_images_in_background,
         task_id,
         request.image_ids,
-        crop_coords,
         db,
         minio_service,
         gemini_service,
