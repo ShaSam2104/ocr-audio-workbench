@@ -75,6 +75,7 @@ def _process_images_in_background(
     gemini_service: GeminiService,
     task_manager,
     languages: Optional[List[str]] = None,
+    model_tier: str = "higher",
 ):
     """
     Background job to process images for OCR.
@@ -87,13 +88,14 @@ def _process_images_in_background(
         gemini_service: Gemini service for OCR
         task_manager: OCR task manager for status tracking
         languages: Optional list of language codes from the book
+        model_tier: Model tier to use ("higher" or "lower")
     """
     # Create a new database session for this background thread
     from app.database import SessionLocal
     db = SessionLocal()
     
     try:
-        logger.info(f"Background OCR job started for task {task_id} with {len(image_ids)} images")
+        logger.info(f"Background OCR job started for task {task_id} with {len(image_ids)} images using model_tier={model_tier}")
         task_manager.start_processing(task_id)
 
         for image_id in image_ids:
@@ -121,10 +123,11 @@ def _process_images_in_background(
                         local_path=tmp_path,
                     ))
 
-                    # Extract text using Gemini with language context
-                    raw_text, detected_language, processing_time_ms = gemini_service.extract_text_from_image(
+                    # Extract text using Gemini with language context and model selection
+                    raw_text, detected_language, processing_time_ms, model_used = gemini_service.extract_text_from_image(
                         tmp_path,
                         languages=languages,
+                        model_tier=model_tier,
                     )
 
                     # Check if OCRText already exists for this image
@@ -135,6 +138,7 @@ def _process_images_in_background(
                         existing_ocr.plain_text_for_search = raw_text  # In production, remove markdown tags
                         existing_ocr.detected_language = detected_language
                         existing_ocr.processing_time_ms = processing_time_ms
+                        existing_ocr.model_used = model_used
                     else:
                         # Create new OCRText record
                         ocr_text = OCRText(
@@ -143,6 +147,7 @@ def _process_images_in_background(
                             plain_text_for_search=raw_text,  # In production, remove markdown tags
                             detected_language=detected_language,
                             processing_time_ms=processing_time_ms,
+                            model_used=model_used,
                         )
                         db.add(ocr_text)
 
@@ -153,7 +158,7 @@ def _process_images_in_background(
 
                     # Mark as completed in task manager
                     task_manager.complete_image(task_id, image_id)
-                    logger.info(f"Image {image_id} OCR completed in {processing_time_ms}ms")
+                    logger.info(f"Image {image_id} OCR completed in {processing_time_ms}ms using {model_used}")
 
                 finally:
                     # Clean up temp file
@@ -248,6 +253,9 @@ async def process_images_ocr(
     settings = get_settings()
     gemini_service = GeminiService(api_key=settings.gemini_api_key)
 
+    # Validate model selection
+    model_tier = request.model if request.model in ["higher", "lower"] else "higher"
+
     # Submit to thread pool - fire and forget
     _executor.submit(
         _process_images_in_background,
@@ -257,9 +265,10 @@ async def process_images_ocr(
         gemini_service,
         task_manager,
         languages=languages,
+        model_tier=model_tier,
     )
 
-    logger.info(f"OCR task {task_id} submitted to background queue")
+    logger.info(f"OCR task {task_id} submitted to background queue with model_tier={model_tier}")
 
     return OCRProcessResponse(
         task_id=task_id,

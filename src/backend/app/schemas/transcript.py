@@ -9,6 +9,7 @@ class AudioTranscriptRequest(BaseModel):
 
     audio_ids: list[int] = Field(..., min_length=1, description="List of audio IDs to transcribe")
     detected_language: Optional[str] = Field(None, description="Override detected language")
+    model: str = Field("higher", description="Model to use: 'higher' (more accurate, slower) or 'lower' (faster, cost-effective)")
 
 
 class AudioTranscriptSchema(BaseModel):
@@ -22,6 +23,7 @@ class AudioTranscriptSchema(BaseModel):
     plain_text_for_search: str  # Plain text without formatting tags
     detected_language: Optional[str] = None
     processing_time_ms: Optional[int] = None  # Time Gemini took to transcribe
+    model_used: Optional[str] = None  # Which model was used for transcription
     created_at: datetime  # When the transcript was extracted
 
 

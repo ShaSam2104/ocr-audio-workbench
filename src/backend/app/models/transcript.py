@@ -16,6 +16,7 @@ class AudioTranscript(Base):
     plain_text_for_search = Column(Text, nullable=False)  # Plain text without tags (for FTS5 indexing)
     detected_language = Column(String(50), nullable=True)
     processing_time_ms = Column(Integer, nullable=True)  # Time Gemini took to transcribe
+    model_used = Column(String(50), nullable=True)  # Which model was used (e.g., 'gemini-3.0-flash', 'gemini-2.5-pro')
     created_at = Column(DateTime, default=func.now(), nullable=False)
 
     # Relationships

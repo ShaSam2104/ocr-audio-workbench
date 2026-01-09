@@ -77,6 +77,7 @@ def _process_audios_in_background(
     gemini_service: GeminiService,
     task_manager,
     languages: Optional[List[str]] = None,
+    model_tier: str = "higher",
 ):
     """
     Background job to process audios for transcription.
@@ -90,13 +91,14 @@ def _process_audios_in_background(
         gemini_service: Gemini service for transcription
         task_manager: Audio task manager for status tracking
         languages: Optional list of language codes from the book
+        model_tier: Model tier to use ("higher" or "lower")
     """
     # Create a new database session for this background thread
     from app.database import SessionLocal
     db = SessionLocal()
     
     try:
-        logger.info(f"Background audio transcription job started for task {task_id} with {len(audio_ids)} audios")
+        logger.info(f"Background audio transcription job started for task {task_id} with {len(audio_ids)} audios using model_tier={model_tier}")
         task_manager.start_processing(task_id)
 
         for audio_id in audio_ids:
@@ -124,11 +126,12 @@ def _process_audios_in_background(
                         local_path=tmp_path,
                     ))
 
-                    # Transcribe using Gemini audio mode with language context
-                    raw_text, detected_language, processing_time_ms = gemini_service.transcribe_audio(
+                    # Transcribe using Gemini audio mode with language context and model selection
+                    raw_text, detected_language, processing_time_ms, model_used = gemini_service.transcribe_audio(
                         tmp_path,
                         language_hint=language_hint,
                         languages=languages,
+                        model_tier=model_tier,
                     )
 
                     # Store transcript result in database
@@ -138,6 +141,7 @@ def _process_audios_in_background(
                         plain_text_for_search=raw_text,  # In production, remove markdown tags
                         detected_language=detected_language,
                         processing_time_ms=processing_time_ms,
+                        model_used=model_used,
                     )
                     db.add(transcript)
 
@@ -148,7 +152,7 @@ def _process_audios_in_background(
 
                     # Mark as completed in task manager
                     task_manager.complete_audio(task_id, audio_id)
-                    logger.info(f"Audio {audio_id} transcription completed in {processing_time_ms}ms")
+                    logger.info(f"Audio {audio_id} transcription completed in {processing_time_ms}ms using {model_used}")
 
                 finally:
                     # Clean up temp file
@@ -237,6 +241,9 @@ async def transcribe_audios(
     minio_service = get_minio_client()
     gemini_service = GeminiService(api_key=settings.gemini_api_key)
 
+    # Validate model selection
+    model_tier = request.model if request.model in ["higher", "lower"] else "higher"
+
     # Submit to thread pool - fire and forget
     _executor.submit(
         _process_audios_in_background,
@@ -247,9 +254,10 @@ async def transcribe_audios(
         gemini_service,
         task_manager,
         languages=languages,
+        model_tier=model_tier,
     )
 
-    logger.info(f"Audio transcription task {task_id} submitted to background queue")
+    logger.info(f"Audio transcription task {task_id} submitted to background queue with model_tier={model_tier}")
 
     return AudioTranscriptionResponse(
         task_id=task_id,
