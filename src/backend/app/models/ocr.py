@@ -18,6 +18,10 @@ class OCRText(Base):
     processing_time_ms = Column(Integer, nullable=True)  # Time Gemini took to extract
     model_used = Column(String(50), nullable=True)  # Which model was used (e.g., 'gemini-3.0-flash', 'gemini-2.5-pro')
     created_at = Column(DateTime, default=func.now(), nullable=False)
+    # Manual edit columns - store user-corrected text separately
+    edited_text_with_formatting = Column(Text, nullable=True)  # User-edited text with markdown formatting
+    edited_plain_text = Column(Text, nullable=True)  # User-edited plain text (for search)
+    edited_at = Column(DateTime, nullable=True)  # When user last edited the text
 
     # Relationships
     image = relationship("Image", back_populates="ocr_text")

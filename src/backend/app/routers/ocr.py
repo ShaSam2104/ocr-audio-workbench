@@ -33,6 +33,7 @@ _executor = ThreadPoolExecutor(max_workers=5)
 class OCRProcessRequest(BaseModel):
     """OCR processing request."""
     image_ids: List[int] = Field(..., description="List of image IDs to process", min_length=1)
+    model: str = Field(default="higher", description="Model tier to use: 'higher' or 'lower'")
 
 
 class ImageProcessingStatus(BaseModel):

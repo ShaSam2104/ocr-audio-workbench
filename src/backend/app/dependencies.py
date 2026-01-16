@@ -8,6 +8,7 @@ from app.models.user import User
 from app.auth import decode_access_token
 from app.services.minio_service import MinIOService
 from app.config import MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE
+from app.logger import logger
 
 
 # MinIO service singleton
@@ -53,18 +54,35 @@ async def get_current_user(
     Raises:
         HTTPException: 403 if no token provided, 401 if token invalid
     """
+    # Log the credentials received
+    logger.debug(f"get_current_user called with credentials: {credentials}")
+    print(f"[AUTH DEBUG] Credentials object: {credentials}", flush=True)
+    
+    if credentials:
+        print(f"[AUTH DEBUG] Credentials.credentials: {credentials.credentials}", flush=True)
+        logger.debug(f"Credentials.credentials: {credentials.credentials}")
+    
     # If HTTPBearer returned no credentials (auto_error=False), treat as missing
     if not credentials or not getattr(credentials, "credentials", None):
+        logger.warning(f"Missing authorization credentials. Credentials: {credentials}")
+        print(f"[AUTH DEBUG] Missing auth - credentials={credentials}", flush=True)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Missing authorization credentials",
         )
 
     token = credentials.credentials
+    logger.debug(f"Extracted token: {token[:20]}..." if len(token) > 20 else f"Token: {token}")
+    print(f"[AUTH DEBUG] Token extracted (first 50 chars): {token[:50]}", flush=True)
 
     # Decode the token
     payload = decode_access_token(token)
+    logger.debug(f"Token decode result: {payload}")
+    print(f"[AUTH DEBUG] Token decode payload: {payload}", flush=True)
+    
     if payload is None:
+        logger.warning("Invalid or expired token")
+        print(f"[AUTH DEBUG] Token is None/invalid", flush=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
@@ -73,7 +91,11 @@ async def get_current_user(
 
     # Extract user_id from token payload (convert from string to int)
     user_id_str: Optional[str] = payload.get("sub")
+    logger.debug(f"Extracted user_id from token: {user_id_str}")
+    print(f"[AUTH DEBUG] User ID from token: {user_id_str}", flush=True)
+    
     if user_id_str is None:
+        logger.warning("Invalid token payload - no 'sub' claim")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",
@@ -83,6 +105,7 @@ async def get_current_user(
     try:
         user_id = int(user_id_str)
     except (ValueError, TypeError):
+        logger.warning(f"Could not convert user_id to int: {user_id_str}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token payload",
@@ -91,7 +114,11 @@ async def get_current_user(
 
     # Query database for user
     user = db.query(User).filter(User.id == user_id).first()
+    logger.debug(f"Database query for user_id {user_id}: {user}")
+    print(f"[AUTH DEBUG] User found in DB: {user}", flush=True)
+    
     if user is None:
+        logger.warning(f"User not found for user_id: {user_id}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",

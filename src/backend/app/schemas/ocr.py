@@ -12,6 +12,14 @@ class OCRProcessRequest(BaseModel):
     model: str = Field("higher", description="Model to use: 'higher' (more accurate, slower) or 'lower' (faster, cost-effective)")
 
 
+class OCRUpdateRequest(BaseModel):
+    """Schema for manual OCR text update request."""
+    
+    text_with_formatting: str = Field(..., description="Corrected text with markdown formatting")
+    plain_text: Optional[str] = Field(None, description="Corrected plain text (auto-extracted if not provided)")
+
+
+
 class OCRSchema(BaseModel):
     """Schema for OCR text response - NO extracted_by, NO extracted_at (uses created_at)."""
 
@@ -25,6 +33,10 @@ class OCRSchema(BaseModel):
     processing_time_ms: Optional[int] = None  # Time Gemini took to extract
     model_used: Optional[str] = None  # Which model was used for extraction
     created_at: datetime  # When the text was extracted
+    # Manual edit fields
+    edited_text_with_formatting: Optional[str] = None  # User-edited text with formatting
+    edited_plain_text: Optional[str] = None  # User-edited plain text
+    edited_at: Optional[datetime] = None  # When user last edited
 
 
 class OCRResponseSchema(BaseModel):

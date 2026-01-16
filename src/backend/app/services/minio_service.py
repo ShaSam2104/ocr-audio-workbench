@@ -3,6 +3,7 @@ import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
+from datetime import timedelta
 from minio import Minio
 from minio.error import S3Error
 
@@ -151,10 +152,14 @@ class MinIOService:
             Presigned URL
         """
         try:
-            url = self.client.get_presigned_download_url(
+            # Convert seconds to timedelta (MinIO SDK requires timedelta)
+            expires_delta = timedelta(seconds=expiration)
+            
+            # Use presigned_get_object for S3-compatible APIs
+            url = self.client.presigned_get_object(
                 bucket_name=bucket,
                 object_name=object_key,
-                expires=expiration,
+                expires=expires_delta,
             )
             logger.info(f"Generated presigned URL for minio://{bucket}/{object_key}")
             return url

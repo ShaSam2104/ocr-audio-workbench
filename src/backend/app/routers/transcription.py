@@ -34,6 +34,7 @@ class AudioTranscriptionRequest(BaseModel):
     """Audio transcription request."""
     audio_ids: List[int] = Field(..., description="List of audio IDs to process", min_length=1)
     language_hint: Optional[str] = Field(None, description="Optional language hint (e.g., 'en', 'hi', 'gu')")
+    model: str = Field("higher", description="Model to use: 'higher' (more accurate, slower) or 'lower' (faster, cost-effective)")
 
 
 class AudioProcessingStatus(BaseModel):
