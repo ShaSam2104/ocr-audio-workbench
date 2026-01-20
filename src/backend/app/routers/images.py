@@ -9,6 +9,7 @@ from app.models.hierarchy import Chapter
 from app.models.image import Image
 from app.models.user import User
 from app.schemas.image import ImageSchema
+from app.schemas.response import MessageResponse
 from app.dependencies import get_current_user, get_minio_client
 from app.services.minio_service import MinIOService
 from app.logger import logger
@@ -189,3 +190,134 @@ async def upload_images(
                 logger.warning(f"Failed to delete temp file {temp_path}: {e}")
 
     return created_images
+
+
+@router.delete("/images/{image_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def delete_image(
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
+) -> MessageResponse:
+    """
+    Delete an image from a chapter and its related OCR data.
+    
+    - Deletes the image record from database
+    - Deletes the OCR text record (if exists) through cascade
+    - Deletes the image file from MinIO
+    
+    Args:
+        image_id: Image ID to delete
+        current_user: Current authenticated user
+        db: Database session
+        minio_service: MinIO service
+    
+    Returns:
+        MessageResponse with success message
+    
+    Raises:
+        HTTPException: 404 if image not found
+    """
+    # Find the image
+    image = db.query(Image).filter(Image.id == image_id).first()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image with id {image_id} not found",
+        )
+    
+    # Store info for logging
+    object_key = image.object_key
+    chapter_id = image.chapter_id
+    
+    try:
+        # Delete from MinIO
+        if object_key:
+            await minio_service.delete_file(bucket="images", object_key=object_key)
+            logger.info(f"Deleted image file from MinIO: {object_key}")
+        
+        # Delete from database (cascade will delete OCRText)
+        db.delete(image)
+        db.commit()
+        
+        logger.info(f"Deleted image {image_id} and its OCR data from chapter {chapter_id}")
+        return MessageResponse(message=f"Image {image_id} and related OCR data deleted successfully")
+    
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting image {image_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete image: {str(e)}",
+        )
+
+
+@router.delete("/chapters/{chapter_id}/images", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def delete_all_images_in_chapter(
+    chapter_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
+) -> MessageResponse:
+    """
+    Delete all images in a chapter along with their OCR data.
+    
+    - Finds all images in the chapter
+    - Deletes each image file from MinIO
+    - Deletes all image records from database
+    - Cascades delete to OCR text records
+    
+    Args:
+        chapter_id: Chapter ID
+        current_user: Current authenticated user
+        db: Database session
+        minio_service: MinIO service
+    
+    Returns:
+        MessageResponse with count of deleted images
+    
+    Raises:
+        HTTPException: 404 if chapter not found
+    """
+    # Verify chapter exists
+    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chapter with id {chapter_id} not found",
+        )
+    
+    try:
+        # Get all images in chapter
+        images = db.query(Image).filter(Image.chapter_id == chapter_id).all()
+        
+        if not images:
+            return MessageResponse(message=f"No images found in chapter {chapter_id}")
+        
+        # Delete each image from MinIO
+        for image in images:
+            if image.object_key:
+                try:
+                    await minio_service.delete_file(bucket="images", object_key=image.object_key)
+                    logger.debug(f"Deleted image file from MinIO: {image.object_key}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete MinIO file {image.object_key}: {e}")
+        
+        # Delete all images from database (cascade will delete OCRText)
+        image_count = len(images)
+        for image in images:
+            db.delete(image)
+        
+        db.commit()
+        logger.info(f"Deleted {image_count} images and their OCR data from chapter {chapter_id}")
+        
+        return MessageResponse(message=f"Deleted {image_count} image(s) and their OCR data from chapter {chapter_id}")
+    
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting images from chapter {chapter_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete images: {str(e)}",
+        )
+

@@ -10,6 +10,7 @@ from app.models.hierarchy import Chapter
 from app.models.audio import Audio
 from app.models.user import User
 from app.schemas.audio import AudioSchema
+from app.schemas.response import MessageResponse
 from app.dependencies import get_current_user, get_minio_client
 from app.services.minio_service import MinIOService
 from app.logger import logger
@@ -229,3 +230,134 @@ async def upload_audios(
                 logger.warning(f"Failed to delete temp file {temp_path}: {e}")
 
     return created_audios
+
+
+@router.delete("/audios/{audio_id}", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def delete_audio(
+    audio_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
+) -> MessageResponse:
+    """
+    Delete an audio file from a chapter and its related transcript data.
+    
+    - Deletes the audio record from database
+    - Deletes the transcript record (if exists) through cascade
+    - Deletes the audio file from MinIO
+    
+    Args:
+        audio_id: Audio ID to delete
+        current_user: Current authenticated user
+        db: Database session
+        minio_service: MinIO service
+    
+    Returns:
+        MessageResponse with success message
+    
+    Raises:
+        HTTPException: 404 if audio not found
+    """
+    # Find the audio
+    audio = db.query(Audio).filter(Audio.id == audio_id).first()
+    if not audio:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Audio with id {audio_id} not found",
+        )
+    
+    # Store info for logging
+    object_key = audio.object_key
+    chapter_id = audio.chapter_id
+    
+    try:
+        # Delete from MinIO
+        if object_key:
+            await minio_service.delete_file(bucket="audio", object_key=object_key)
+            logger.info(f"Deleted audio file from MinIO: {object_key}")
+        
+        # Delete from database (cascade will delete AudioTranscript)
+        db.delete(audio)
+        db.commit()
+        
+        logger.info(f"Deleted audio {audio_id} and its transcript data from chapter {chapter_id}")
+        return MessageResponse(message=f"Audio {audio_id} and related transcript data deleted successfully")
+    
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting audio {audio_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete audio: {str(e)}",
+        )
+
+
+@router.delete("/chapters/{chapter_id}/audios", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def delete_all_audios_in_chapter(
+    chapter_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
+) -> MessageResponse:
+    """
+    Delete all audio files in a chapter along with their transcript data.
+    
+    - Finds all audios in the chapter
+    - Deletes each audio file from MinIO
+    - Deletes all audio records from database
+    - Cascades delete to transcript records
+    
+    Args:
+        chapter_id: Chapter ID
+        current_user: Current authenticated user
+        db: Database session
+        minio_service: MinIO service
+    
+    Returns:
+        MessageResponse with count of deleted audios
+    
+    Raises:
+        HTTPException: 404 if chapter not found
+    """
+    # Verify chapter exists
+    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chapter with id {chapter_id} not found",
+        )
+    
+    try:
+        # Get all audios in chapter
+        audios = db.query(Audio).filter(Audio.chapter_id == chapter_id).all()
+        
+        if not audios:
+            return MessageResponse(message=f"No audio files found in chapter {chapter_id}")
+        
+        # Delete each audio from MinIO
+        for audio in audios:
+            if audio.object_key:
+                try:
+                    await minio_service.delete_file(bucket="audio", object_key=audio.object_key)
+                    logger.debug(f"Deleted audio file from MinIO: {audio.object_key}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete MinIO file {audio.object_key}: {e}")
+        
+        # Delete all audios from database (cascade will delete AudioTranscript)
+        audio_count = len(audios)
+        for audio in audios:
+            db.delete(audio)
+        
+        db.commit()
+        logger.info(f"Deleted {audio_count} audio files and their transcript data from chapter {chapter_id}")
+        
+        return MessageResponse(message=f"Deleted {audio_count} audio file(s) and their transcript data from chapter {chapter_id}")
+    
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting audios from chapter {chapter_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete audio files: {str(e)}",
+        )
+

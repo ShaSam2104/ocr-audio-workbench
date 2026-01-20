@@ -80,23 +80,21 @@ async def list_chapters(
     }
 
 
-@router.get("/books/{book_id}/chapters/{chapter_id}", response_model=ChapterWithContentResponse)
-async def get_chapter_with_content(
+@router.get("/books/{book_id}/chapters/{chapter_id}/images", response_model=dict)
+async def get_chapter_images(
     book_id: int,
     chapter_id: int,
-    page: int = Query(1, ge=1, description="Page number for images and audio"),
-    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page for images and audio"),
+    page: int = Query(1, ge=1, description="Page number for images"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     minio_service: MinIOService = Depends(get_minio_client),
-) -> ChapterWithContentResponse:
+) -> dict:
     """
-    Retrieve chapter details along with paginated images and audio content.
+    Retrieve chapter details with paginated images and their OCR text.
 
-    Returns chapter metadata with:
-    - Paginated images in the chapter with their OCR status and text (if extracted)
-    - Paginated audio files in the chapter with their transcription status and transcript (if extracted)
-    - Content is sorted by sequence_number
+    Returns chapter metadata with paginated images in the chapter with their OCR status and text (if extracted).
+    Images are sorted by sequence_number.
 
     Args:
         book_id: Book ID
@@ -105,9 +103,10 @@ async def get_chapter_with_content(
         page_size: Items per page for pagination
         current_user: Current authenticated user
         db: Database session
+        minio_service: MinIO service for presigned URLs
 
     Returns:
-        Chapter with paginated images and audio content
+        Chapter with paginated images content
         
     Raises:
         HTTPException: 404 if book or chapter not found
@@ -134,7 +133,6 @@ async def get_chapter_with_content(
     # Calculate offset for pagination
     offset = (page - 1) * page_size
 
-    # ========== IMAGES PAGINATION ==========
     # Get total image count
     images_query = db.query(Image).filter(Image.chapter_id == chapter_id)
     total_images = images_query.count()
@@ -179,8 +177,70 @@ async def get_chapter_with_content(
             ocr_text=ocr_data,
         )
         images_content.append(image_content)
+    
+    # Build and return chapter with images
+    return {
+        "chapter": ChapterSchema.model_validate(chapter).model_dump(),
+        "images": {
+            "items": [img.model_dump() for img in images_content],
+            "total": total_images,
+            "page": page,
+            "page_size": page_size,
+        },
+    }
 
-    # ========== AUDIO PAGINATION ==========
+
+@router.get("/books/{book_id}/chapters/{chapter_id}/audios", response_model=dict)
+async def get_chapter_audios(
+    book_id: int,
+    chapter_id: int,
+    page: int = Query(1, ge=1, description="Page number for audio"),
+    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Retrieve chapter details with paginated audio files and their transcripts.
+
+    Returns chapter metadata with paginated audio files in the chapter with their transcription status and transcript (if extracted).
+    Audio files are sorted by sequence_number.
+
+    Args:
+        book_id: Book ID
+        chapter_id: Chapter ID
+        page: Page number (1-indexed) for pagination
+        page_size: Items per page for pagination
+        current_user: Current authenticated user
+        db: Database session
+
+    Returns:
+        Chapter with paginated audio content
+        
+    Raises:
+        HTTPException: 404 if book or chapter not found
+    """
+    # Verify book exists
+    book = db.query(Book).filter(Book.id == book_id).first()
+    if not book:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Book with id {book_id} not found",
+        )
+
+    # Verify chapter exists and belongs to this book
+    chapter = db.query(Chapter).filter(
+        Chapter.id == chapter_id,
+        Chapter.book_id == book_id,
+    ).first()
+    if not chapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chapter with id {chapter_id} not found in book {book_id}",
+        )
+
+    # Calculate offset for pagination
+    offset = (page - 1) * page_size
+
     # Get total audio count
     audios_query = db.query(Audio).filter(Audio.chapter_id == chapter_id)
     total_audios = audios_query.count()
@@ -215,30 +275,16 @@ async def get_chapter_with_content(
         )
         audios_content.append(audio_content)
     
-    # Build and return chapter detail response with pagination metadata
-    return ChapterWithContentResponse(
-        chapter=ChapterSchema(
-            id=chapter.id,
-            book_id=chapter.book_id,
-            name=chapter.name,
-            description=chapter.description,
-            sequence_order=chapter.sequence_order,
-            created_at=chapter.created_at,
-            updated_at=chapter.updated_at,
-        ),
-        images={
-            "items": images_content,
-            "total": total_images,
-            "page": page,
-            "page_size": page_size,
-        },
-        audios={
-            "items": audios_content,
+    # Build and return chapter with audios
+    return {
+        "chapter": ChapterSchema.model_validate(chapter).model_dump(),
+        "audios": {
+            "items": [audio.model_dump() for audio in audios_content],
             "total": total_audios,
             "page": page,
             "page_size": page_size,
         },
-    )
+    }
 
 
 @router.post("/books/{book_id}/chapters", response_model=ChapterSchema, status_code=status.HTTP_201_CREATED)
