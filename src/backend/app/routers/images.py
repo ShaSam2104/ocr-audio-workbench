@@ -212,6 +212,7 @@ async def delete_image(
     - Deletes the image record from database
     - Deletes the OCR text record (if exists) through cascade
     - Deletes the image file from MinIO
+    - Automatically renumbers remaining images' sequence numbers
     
     Args:
         image_id: Image ID to delete
@@ -236,6 +237,7 @@ async def delete_image(
     # Store info for logging
     object_key = image.object_key
     chapter_id = image.chapter_id
+    deleted_sequence = image.sequence_number
     
     try:
         # Delete from MinIO
@@ -245,10 +247,17 @@ async def delete_image(
         
         # Delete from database (cascade will delete OCRText)
         db.delete(image)
+        db.flush()
+        
+        # Renumber remaining images' sequence numbers
+        remaining_images = db.query(Image).filter(Image.chapter_id == chapter_id).order_by(Image.sequence_number).all()
+        for idx, img in enumerate(remaining_images, start=1):
+            img.sequence_number = idx
+        
         db.commit()
         
-        logger.info(f"Deleted image {image_id} and its OCR data from chapter {chapter_id}")
-        return MessageResponse(message=f"Image {image_id} and related OCR data deleted successfully")
+        logger.info(f"Deleted image {image_id} (was at position {deleted_sequence}) and renumbered {len(remaining_images)} remaining images")
+        return MessageResponse(message=f"Image deleted successfully. Renumbered {len(remaining_images)} remaining image(s)")
     
     except Exception as e:
         db.rollback()

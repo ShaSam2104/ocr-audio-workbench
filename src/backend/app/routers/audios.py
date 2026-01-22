@@ -245,6 +245,7 @@ async def delete_audio(
     - Deletes the audio record from database
     - Deletes the transcript record (if exists) through cascade
     - Deletes the audio file from MinIO
+    - Automatically renumbers remaining audios' sequence numbers
     
     Args:
         audio_id: Audio ID to delete
@@ -269,6 +270,7 @@ async def delete_audio(
     # Store info for logging
     object_key = audio.object_key
     chapter_id = audio.chapter_id
+    deleted_sequence = audio.sequence_number
     
     try:
         # Delete from MinIO
@@ -278,10 +280,17 @@ async def delete_audio(
         
         # Delete from database (cascade will delete AudioTranscript)
         db.delete(audio)
+        db.flush()
+        
+        # Renumber remaining audios' sequence numbers
+        remaining_audios = db.query(Audio).filter(Audio.chapter_id == chapter_id).order_by(Audio.sequence_number).all()
+        for idx, aud in enumerate(remaining_audios, start=1):
+            aud.sequence_number = idx
+        
         db.commit()
         
-        logger.info(f"Deleted audio {audio_id} and its transcript data from chapter {chapter_id}")
-        return MessageResponse(message=f"Audio {audio_id} and related transcript data deleted successfully")
+        logger.info(f"Deleted audio {audio_id} (was at position {deleted_sequence}) and renumbered {len(remaining_audios)} remaining audios")
+        return MessageResponse(message=f"Audio deleted successfully. Renumbered {len(remaining_audios)} remaining audio(s)")
     
     except Exception as e:
         db.rollback()
