@@ -21,13 +21,13 @@ class GeminiService:
     # Model mappings: Higher tier (accurate), Lower tier (cost-effective)
     MODEL_MAPPING = {
         ModelTier.HIGHER: "gemini-3-pro-preview",      # Accurate on old/handwritten documents
-        ModelTier.LOWER: "gemini-2.5-pro",             # Cost-effective, still good quality
+        ModelTier.LOWER: "gemini-3-flash-preview",             # Cost-effective, still good quality
     }
     
     # Fallback order when rate limit is hit
     FALLBACK_ORDER = [
         "gemini-3-pro-preview",
-        "gemini-2.5-pro",
+        "gemini-3-flash-preview",
     ]
 
     EXTRACTION_PROMPT = """Extract all text from the image EXACTLY as it appears.
@@ -39,15 +39,16 @@ CRITICAL INSTRUCTIONS:
    - For each word you extract, validate it against the provided language's vocabulary and script
    - If a word appears valid in that language's script, extract it as is
    - If a word has stray marks/dots/diacritics that don't belong to the language script, remove them
-   - Example: If you see "ઓછાં" but the correct word is "ઓછા" (stray dot/mark), extract "ઓછા"
    - If uncertain whether a mark is a stray artifact, check if removing it creates a valid word in the language
+   - Consider multiple languages if specified, and validate words accordingly
+   - If multiple languages are present, preserve the language distribution in the output
 3. OCR ARTIFACTS:
    - Look for stray dots, marks, or diacritics that appear to be OCR errors
    - If removing a mark/dot results in a valid word in the provided language, remove it
    - If keeping the mark results in an invalid/non-existent word, try removing it
    - Only keep marks/dots if they are legitimate parts of the word in that language
 4. WHEN NO LANGUAGE VOCABULARY MATCH:
-   - If a word cannot be validated against the provided language, extract it exactly as shown in the image
+   - If a word cannot be validated against the provided languages, extract it exactly as shown in the image
    - Do not try to "correct" it - just transcribe it exactly
 5. EDITORIAL MARKS & INSERTIONS:
    - Look for "^" (caret) symbols or other insertion marks in the text
@@ -133,7 +134,7 @@ Do not add any extra commentary or headers."""
                 'de': 'German',
             }
             lang_names = [language_names.get(lang, lang) for lang in languages]
-            prompt += f"\n\nThe image contains text in: {', '.join(lang_names)}. Preserve the original language and script exactly."
+            prompt += f"\n\nThe image contains text in: {', '.join(lang_names)} this is very important to consider so detect the languages in the text properly and make sure if more than one language is present preserve it and give output accordingly too. Preserve the original language and script exactly."
         
         prompt += "\n\nIMPORTANT: If the image has a table, keep it as a clear row-by-row structure. If it has mixed text and table, extract both maintaining their original layout."
 

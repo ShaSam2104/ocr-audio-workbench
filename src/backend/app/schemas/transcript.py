@@ -9,7 +9,7 @@ class AudioTranscriptRequest(BaseModel):
 
     audio_ids: list[int] = Field(..., min_length=1, description="List of audio IDs to transcribe")
     detected_language: Optional[str] = Field(None, description="Override detected language")
-    model: str = Field("higher", description="Model to use: 'higher' (more accurate, slower) or 'lower' (faster, cost-effective)")
+    model: str = Field("lower", description="Model to use: 'higher' (more accurate, slower) or 'lower' (faster, cost-effective)")
 
 
 class AudioTranscriptUpdateRequest(BaseModel):

@@ -33,7 +33,7 @@ _executor = ThreadPoolExecutor(max_workers=5)
 class OCRProcessRequest(BaseModel):
     """OCR processing request."""
     image_ids: List[int] = Field(..., description="List of image IDs to process", min_length=1)
-    model: str = Field(default="higher", description="Model tier to use: 'higher' or 'lower'")
+    model: str = Field(default="lower", description="Model tier to use: 'higher' or 'lower'")
 
 
 class ImageProcessingStatus(BaseModel):
@@ -252,6 +252,14 @@ async def process_images_ocr(
 
     # Submit background job (don't wait for result)
     settings = get_settings()
+    # Validate API key is configured
+    if not settings.gemini_api_key:
+        logger.error("[OCR] GEMINI_API_KEY environment variable is not set")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Gemini API is not configured. Please set GEMINI_API_KEY environment variable.",
+        )
+    
     gemini_service = GeminiService(api_key=settings.gemini_api_key)
 
     # Validate model selection
