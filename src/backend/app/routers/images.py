@@ -8,7 +8,7 @@ from app.database import get_db
 from app.models.hierarchy import Chapter
 from app.models.image import Image
 from app.models.user import User
-from app.schemas.image import ImageSchema
+from app.schemas.image import ImageSchema, BatchImageReorderSchema
 from app.schemas.response import MessageResponse
 from app.dependencies import get_current_user, get_minio_client
 from app.services.minio_service import MinIOService
@@ -45,9 +45,9 @@ def validate_image_file(file: UploadFile) -> tuple[bool, str]:
     if not file.filename:
         return False, "Filename is missing"
     
-    file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in ALLOWED_IMAGE_FORMATS:
-        return False, f"Invalid file extension. Allowed: {', '.join(ALLOWED_IMAGE_FORMATS)}"
+    # file_ext = Path(file.filename).suffix.lower()
+    # if file_ext not in ALLOWED_IMAGE_FORMATS:
+    #     return False, f"Invalid file extension. Allowed: {', '.join(ALLOWED_IMAGE_FORMATS)}"
     
     return True, ""
 
@@ -82,15 +82,19 @@ async def upload_images(
     Raises:
         HTTPException: 404 if chapter not found, 400 if file validation fails
     """
+    logger.debug(f"[UPLOAD] Received upload request for chapter {chapter_id} with {len(files) if files else 0} files")
+    
     # Verify chapter exists
     chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
     if not chapter:
+        logger.warning(f"[UPLOAD] Chapter {chapter_id} not found")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chapter with id {chapter_id} not found",
         )
 
     if not files or len(files) == 0:
+        logger.warning(f"[UPLOAD] No files provided in request")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided",
@@ -104,10 +108,13 @@ async def upload_images(
             # Validate file format
             is_valid, error_msg = validate_image_file(file)
             if not is_valid:
+                logger.warning(f"[UPLOAD] File validation failed for {file.filename}: {error_msg}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=error_msg,
                 )
+
+            logger.debug(f"[UPLOAD] Processing file: {file.filename} (content_type: {file.content_type})")
 
             # Save to temporary location
             temp_dir = tempfile.gettempdir()
@@ -319,5 +326,149 @@ async def delete_all_images_in_chapter(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete images: {str(e)}",
+        )
+
+
+@router.put("/chapters/{chapter_id}/images/reorder", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def reorder_images(
+    chapter_id: int,
+    request: BatchImageReorderSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    """
+    Reorder images in a chapter by sequence position.
+    
+    Move images from one sequence position to another. Example:
+    - Move the image at position 10 to position 1
+    - All images in between shift accordingly to fill the gap
+    - Frontend just deals with positions (1-N), not image IDs
+    
+    Request:
+    ```json
+    {
+      "images": [
+        {"current_sequence_number": 10, "new_sequence_number": 1}
+      ]
+    }
+    ```
+    
+    Args:
+        chapter_id: Chapter ID
+        request: Batch reorder request with current and new positions
+        current_user: Current authenticated user
+        db: Database session
+    
+    Returns:
+        MessageResponse with count of updated images
+    
+    Raises:
+        HTTPException: 404 if chapter not found, 400 if validation fails
+    """
+    # Verify chapter exists
+    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chapter with id {chapter_id} not found",
+        )
+    
+    if not request.images:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No images provided for reordering",
+        )
+    
+    try:
+        # Get all images in chapter, sorted by sequence_number
+        all_images = db.query(Image).filter(Image.chapter_id == chapter_id).order_by(Image.sequence_number).all()
+        
+        if not all_images:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No images found in this chapter",
+            )
+        
+        # Create map of sequence_number -> image for quick lookup
+        sequence_to_image = {img.sequence_number: img for img in all_images}
+        total_images = len(all_images)
+        
+        logger.info(f"[REORDER] Chapter {chapter_id} has {total_images} images")
+        logger.info(f"[REORDER] Request to move: {[(img.current_sequence_number, img.new_sequence_number) for img in request.images]}")
+        
+        # Verify all current sequence numbers exist and validate new sequence numbers
+        for item in request.images:
+            if item.current_sequence_number not in sequence_to_image:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No image at position {item.current_sequence_number}",
+                )
+            if item.new_sequence_number < 1 or item.new_sequence_number > total_images:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid position {item.new_sequence_number}. Must be between 1 and {total_images}",
+                )
+        
+        # Create mapping of current_position -> new_position
+        reorder_map = {item.current_sequence_number: item.new_sequence_number for item in request.images}
+        
+        # Calculate new sequence numbers with intelligent shifting
+        new_sequences = {}
+        
+        for image in all_images:
+            current_seq = image.sequence_number
+            
+            if current_seq in reorder_map:
+                # This image is being moved
+                new_sequences[image.id] = reorder_map[current_seq]
+            else:
+                # This image is staying, but may need to shift based on moves
+                shift = 0
+                
+                # For each position being moved, calculate how it affects this image's position
+                for current_pos, new_pos in reorder_map.items():
+                    # If moved FROM higher TO lower: images in range [new_pos, current_pos) shift UP
+                    # If moved FROM lower TO higher: images in range (current_pos, new_pos] shift DOWN
+                    if new_pos <= current_seq < current_pos:
+                        # Position moved down, we shift up (increment)
+                        shift += 1
+                    elif current_pos < current_seq <= new_pos:
+                        # Position moved up, we shift down (decrement)
+                        shift -= 1
+                
+                new_sequences[image.id] = current_seq + shift
+        
+        # Verify no duplicate sequence numbers
+        sequence_values = list(new_sequences.values())
+        if len(set(sequence_values)) != len(sequence_values):
+            logger.error(f"[REORDER] Duplicate sequence numbers detected: {sequence_values}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid reordering: resulting in duplicate sequence numbers",
+            )
+        
+        # Update all sequence numbers
+        for image in all_images:
+            image.sequence_number = new_sequences[image.id]
+        
+        # Renormalize sequences to be contiguous [1, N]
+        all_images.sort(key=lambda img: img.sequence_number)
+        for idx, image in enumerate(all_images, start=1):
+            image.sequence_number = idx
+        
+        db.commit()
+        logger.info(f"[REORDER] Updated sequence numbers for {len(request.images)} image(s) in chapter {chapter_id}")
+        logger.info(f"[REORDER] Final result: {[(img.id, img.sequence_number) for img in all_images]}")
+        
+        return MessageResponse(message=f"Reordered {len(request.images)} image(s)")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error reordering images in chapter {chapter_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reorder images: {str(e)}",
         )
 

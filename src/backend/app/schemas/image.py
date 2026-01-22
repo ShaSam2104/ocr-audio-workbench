@@ -12,10 +12,16 @@ class ImageCreateSchema(BaseModel):
 
 
 class ImageReorderSchema(BaseModel):
-    """Schema for reordering images."""
+    """Schema for reordering a single image by sequence position."""
 
-    image_id: int
-    new_sequence_number: int
+    current_sequence_number: int = Field(..., description="Current sequence number (position)")
+    new_sequence_number: int = Field(..., description="New sequence number (position)")
+
+
+class BatchImageReorderSchema(BaseModel):
+    """Schema for batch reordering multiple images by sequence positions."""
+
+    images: list[ImageReorderSchema] = Field(..., description="List of reorder operations with current and new sequence numbers")
 
 
 class ImageUpdateSchema(BaseModel):

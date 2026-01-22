@@ -18,6 +18,7 @@ from app.schemas.hierarchy import (
     ChapterWithContentResponse,
 )
 from app.schemas.response import MessageResponse
+from app.schemas.audio import BatchAudioReorderSchema
 from app.dependencies import get_current_user, get_minio_client
 from app.services.minio_service import MinIOService
 from app.config import MINIO_IMAGE_BUCKET
@@ -435,3 +436,147 @@ async def delete_chapter(
     db.commit()
 
     return MessageResponse(message=f"Chapter {chapter_id} deleted successfully")
+
+
+@router.put("/chapters/{chapter_id}/audios/reorder", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+async def reorder_audios(
+    chapter_id: int,
+    request: BatchAudioReorderSchema,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MessageResponse:
+    """
+    Reorder audio files in a chapter by sequence position.
+    
+    Move audios from one sequence position to another. Example:
+    - Move the audio at position 5 to position 1
+    - All audios in between shift accordingly to fill the gap
+    - Frontend just deals with positions (1-N), not audio IDs
+    
+    Request:
+    ```json
+    {
+      "audios": [
+        {"current_sequence_number": 5, "new_sequence_number": 1}
+      ]
+    }
+    ```
+    
+    Args:
+        chapter_id: Chapter ID
+        request: Batch reorder request with current and new positions
+        current_user: Current authenticated user
+        db: Database session
+    
+    Returns:
+        MessageResponse with count of updated audios
+    
+    Raises:
+        HTTPException: 404 if chapter not found, 400 if validation fails
+    """
+    # Verify chapter exists
+    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
+    if not chapter:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chapter with id {chapter_id} not found",
+        )
+    
+    if not request.audios:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No audios provided for reordering",
+        )
+    
+    try:
+        # Get all audios in chapter, sorted by sequence_number
+        all_audios = db.query(Audio).filter(Audio.chapter_id == chapter_id).order_by(Audio.sequence_number).all()
+        
+        if not all_audios:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No audios found in this chapter",
+            )
+        
+        # Create map of sequence_number -> audio for quick lookup
+        sequence_to_audio = {audio.sequence_number: audio for audio in all_audios}
+        total_audios = len(all_audios)
+        
+        logger.info(f"[REORDER] Chapter {chapter_id} has {total_audios} audios")
+        logger.info(f"[REORDER] Request to move: {[(audio.current_sequence_number, audio.new_sequence_number) for audio in request.audios]}")
+        
+        # Verify all current sequence numbers exist and validate new sequence numbers
+        for item in request.audios:
+            if item.current_sequence_number not in sequence_to_audio:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No audio at position {item.current_sequence_number}",
+                )
+            if item.new_sequence_number < 1 or item.new_sequence_number > total_audios:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid position {item.new_sequence_number}. Must be between 1 and {total_audios}",
+                )
+        
+        # Create mapping of current_position -> new_position
+        reorder_map = {item.current_sequence_number: item.new_sequence_number for item in request.audios}
+        
+        # Calculate new sequence numbers with intelligent shifting
+        new_sequences = {}
+        
+        for audio in all_audios:
+            current_seq = audio.sequence_number
+            
+            if current_seq in reorder_map:
+                # This audio is being moved
+                new_sequences[audio.id] = reorder_map[current_seq]
+            else:
+                # This audio is staying, but may need to shift based on moves
+                shift = 0
+                
+                # For each position being moved, calculate how it affects this audio's position
+                for current_pos, new_pos in reorder_map.items():
+                    # If moved FROM higher TO lower: audios in range [new_pos, current_pos) shift UP
+                    # If moved FROM lower TO higher: audios in range (current_pos, new_pos] shift DOWN
+                    if new_pos <= current_seq < current_pos:
+                        # Position moved down, we shift up (increment)
+                        shift += 1
+                    elif current_pos < current_seq <= new_pos:
+                        # Position moved up, we shift down (decrement)
+                        shift -= 1
+                
+                new_sequences[audio.id] = current_seq + shift
+        
+        # Verify no duplicate sequence numbers
+        sequence_values = list(new_sequences.values())
+        if len(set(sequence_values)) != len(sequence_values):
+            logger.error(f"[REORDER] Duplicate sequence numbers detected: {sequence_values}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid reordering: resulting in duplicate sequence numbers",
+            )
+        
+        # Update all sequence numbers
+        for audio in all_audios:
+            audio.sequence_number = new_sequences[audio.id]
+        
+        # Renormalize sequences to be contiguous [1, N]
+        all_audios.sort(key=lambda audio: audio.sequence_number)
+        for idx, audio in enumerate(all_audios, start=1):
+            audio.sequence_number = idx
+        
+        db.commit()
+        logger.info(f"[REORDER] Updated sequence numbers for {len(request.audios)} audio(s) in chapter {chapter_id}")
+        logger.info(f"[REORDER] Final result: {[(audio.id, audio.sequence_number) for audio in all_audios]}")
+        
+        return MessageResponse(message=f"Reordered {len(request.audios)} audio(s)")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error reordering audios in chapter {chapter_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reorder audios: {str(e)}",
+        )

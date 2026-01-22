@@ -11,10 +11,16 @@ class AudioCreateSchema(BaseModel):
 
 
 class AudioReorderSchema(BaseModel):
-    """Schema for reordering audio files."""
+    """Schema for reordering a single audio file by sequence position."""
 
-    audio_id: int
-    new_sequence_number: int
+    current_sequence_number: int = Field(..., description="Current sequence number (position)")
+    new_sequence_number: int = Field(..., description="New sequence number (position)")
+
+
+class BatchAudioReorderSchema(BaseModel):
+    """Schema for batch reordering multiple audio files by sequence positions."""
+
+    audios: list[AudioReorderSchema] = Field(..., description="List of reorder operations with current and new sequence numbers")
 
 
 class AudioUpdateSchema(BaseModel):
