@@ -34,7 +34,7 @@ class OCRProcessRequest(BaseModel):
     """OCR processing request."""
     image_ids: List[int] = Field(..., description="List of image IDs to process", min_length=1)
     model: str = Field(default="lower", description="Model tier to use: 'higher' or 'lower'")
-
+    custom_prompt: Optional[str] = Field(None, description="Optional custom prompt to be appended to the default OCR extraction prompt")
 
 class ImageProcessingStatus(BaseModel):
     """Status of a single image in a task."""
@@ -77,6 +77,7 @@ def _process_images_in_background(
     task_manager,
     languages: Optional[List[str]] = None,
     model_tier: str = "higher",
+    custom_prompt: Optional[str] = None,
 ):
     """
     Background job to process images for OCR.
@@ -90,6 +91,7 @@ def _process_images_in_background(
         task_manager: OCR task manager for status tracking
         languages: Optional list of language codes from the book
         model_tier: Model tier to use ("higher" or "lower")
+        custom_prompt: Optional custom prompt to combine with the default extraction prompt
     """
     # Create a new database session for this background thread
     from app.database import SessionLocal
@@ -129,6 +131,7 @@ def _process_images_in_background(
                         tmp_path,
                         languages=languages,
                         model_tier=model_tier,
+                        custom_prompt=custom_prompt,
                     )
 
                     # Check if OCRText already exists for this image
@@ -275,6 +278,7 @@ async def process_images_ocr(
         task_manager,
         languages=languages,
         model_tier=model_tier,
+        custom_prompt=request.custom_prompt,
     )
 
     logger.info(f"OCR task {task_id} submitted to background queue with model_tier={model_tier}")

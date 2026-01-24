@@ -521,31 +521,37 @@ async def reorder_audios(
         # Create mapping of current_position -> new_position
         reorder_map = {item.current_sequence_number: item.new_sequence_number for item in request.audios}
         
-        # Calculate new sequence numbers with intelligent shifting
-        new_sequences = {}
+        # Use a simpler approach: build the new order directly
+        # Create list of (position, audio_id) for audios being moved
+        moved_audios = [(reorder_map[seq], sequence_to_audio[seq].id) for seq in reorder_map.keys()]
         
-        for audio in all_audios:
-            current_seq = audio.sequence_number
-            
-            if current_seq in reorder_map:
-                # This audio is being moved
-                new_sequences[audio.id] = reorder_map[current_seq]
-            else:
-                # This audio is staying, but may need to shift based on moves
-                shift = 0
-                
-                # For each position being moved, calculate how it affects this audio's position
-                for current_pos, new_pos in reorder_map.items():
-                    # If moved FROM higher TO lower: audios in range [new_pos, current_pos) shift UP
-                    # If moved FROM lower TO higher: audios in range (current_pos, new_pos] shift DOWN
-                    if new_pos <= current_seq < current_pos:
-                        # Position moved down, we shift up (increment)
-                        shift += 1
-                    elif current_pos < current_seq <= new_pos:
-                        # Position moved up, we shift down (decrement)
-                        shift -= 1
-                
-                new_sequences[audio.id] = current_seq + shift
+        # Create list of remaining audios (not being moved)
+        remaining_positions = [seq for seq in range(1, total_audios + 1) if seq not in reorder_map]
+        remaining_audios_ids = [sequence_to_audio[seq].id for seq in remaining_positions]
+        
+        # Build the final order by placing moved audios at their target positions
+        final_order = [None] * total_audios
+        
+        # Place moved audios first
+        for target_pos, audio_id in moved_audios:
+            if final_order[target_pos - 1] is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Multiple audios trying to move to position {target_pos}",
+                )
+            final_order[target_pos - 1] = audio_id
+        
+        # Fill remaining positions with non-moved audios in order
+        remaining_idx = 0
+        for pos in range(total_audios):
+            if final_order[pos] is None:
+                final_order[pos] = remaining_audios_ids[remaining_idx]
+                remaining_idx += 1
+        
+        # Create new_sequences mapping from this final order
+        new_sequences = {}
+        for position, audio_id in enumerate(final_order, start=1):
+            new_sequences[audio_id] = position
         
         # Verify no duplicate sequence numbers
         sequence_values = list(new_sequences.values())

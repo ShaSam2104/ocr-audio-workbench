@@ -35,6 +35,7 @@ class AudioTranscriptionRequest(BaseModel):
     audio_ids: List[int] = Field(..., description="List of audio IDs to process", min_length=1)
     language_hint: Optional[str] = Field(None, description="Optional language hint (e.g., 'en', 'hi', 'gu')")
     model: str = Field("lower", description="Model to use: 'higher' (more accurate, slower) or 'lower' (faster, cost-effective)")
+    custom_prompt: Optional[str] = Field(None, description="Optional custom prompt to be appended to the default transcription prompt")
 
 
 class AudioProcessingStatus(BaseModel):
@@ -79,6 +80,7 @@ def _process_audios_in_background(
     task_manager,
     languages: Optional[List[str]] = None,
     model_tier: str = "higher",
+    custom_prompt: Optional[str] = None,
 ):
     """
     Background job to process audios for transcription.
@@ -93,6 +95,7 @@ def _process_audios_in_background(
         task_manager: Audio task manager for status tracking
         languages: Optional list of language codes from the book
         model_tier: Model tier to use ("higher" or "lower")
+        custom_prompt: Optional custom prompt to combine with the default transcription prompt
     """
     # Create a new database session for this background thread
     from app.database import SessionLocal
@@ -133,6 +136,7 @@ def _process_audios_in_background(
                         language_hint=language_hint,
                         languages=languages,
                         model_tier=model_tier,
+                        custom_prompt=custom_prompt,
                     )
 
                     # Store transcript result in database
@@ -256,6 +260,7 @@ async def transcribe_audios(
         task_manager,
         languages=languages,
         model_tier=model_tier,
+        custom_prompt=request.custom_prompt,
     )
 
     logger.info(f"Audio transcription task {task_id} submitted to background queue with model_tier={model_tier}")

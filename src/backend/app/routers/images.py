@@ -421,31 +421,37 @@ async def reorder_images(
         # Create mapping of current_position -> new_position
         reorder_map = {item.current_sequence_number: item.new_sequence_number for item in request.images}
         
-        # Calculate new sequence numbers with intelligent shifting
-        new_sequences = {}
+        # Use a simpler approach: build the new order directly
+        # Create list of (position, image_id) for images being moved
+        moved_images = [(reorder_map[seq], sequence_to_image[seq].id) for seq in reorder_map.keys()]
         
-        for image in all_images:
-            current_seq = image.sequence_number
-            
-            if current_seq in reorder_map:
-                # This image is being moved
-                new_sequences[image.id] = reorder_map[current_seq]
-            else:
-                # This image is staying, but may need to shift based on moves
-                shift = 0
-                
-                # For each position being moved, calculate how it affects this image's position
-                for current_pos, new_pos in reorder_map.items():
-                    # If moved FROM higher TO lower: images in range [new_pos, current_pos) shift UP
-                    # If moved FROM lower TO higher: images in range (current_pos, new_pos] shift DOWN
-                    if new_pos <= current_seq < current_pos:
-                        # Position moved down, we shift up (increment)
-                        shift += 1
-                    elif current_pos < current_seq <= new_pos:
-                        # Position moved up, we shift down (decrement)
-                        shift -= 1
-                
-                new_sequences[image.id] = current_seq + shift
+        # Create list of remaining images (not being moved)
+        remaining_positions = [seq for seq in range(1, total_images + 1) if seq not in reorder_map]
+        remaining_images = [sequence_to_image[seq].id for seq in remaining_positions]
+        
+        # Build the final order by placing moved images at their target positions
+        final_order = [None] * total_images
+        
+        # Place moved images first
+        for target_pos, image_id in moved_images:
+            if final_order[target_pos - 1] is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Multiple images trying to move to position {target_pos}",
+                )
+            final_order[target_pos - 1] = image_id
+        
+        # Fill remaining positions with non-moved images in order
+        remaining_idx = 0
+        for pos in range(total_images):
+            if final_order[pos] is None:
+                final_order[pos] = remaining_images[remaining_idx]
+                remaining_idx += 1
+        
+        # Create new_sequences mapping from this final order
+        new_sequences = {}
+        for position, image_id in enumerate(final_order, start=1):
+            new_sequences[image_id] = position
         
         # Verify no duplicate sequence numbers
         sequence_values = list(new_sequences.values())

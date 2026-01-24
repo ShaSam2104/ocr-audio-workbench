@@ -88,7 +88,8 @@ Do not add any extra commentary or headers."""
         self, 
         image_path: str, 
         languages: Optional[List[str]] = None,
-        model_tier: str = "higher"
+        model_tier: str = "higher",
+        custom_prompt: Optional[str] = None
     ) -> Tuple[str, str, int, str]:
         """
         Extract text from a single image using Gemini Vision with multi-model support.
@@ -97,6 +98,7 @@ Do not add any extra commentary or headers."""
             image_path: Path to the image file
             languages: Optional list of languages to expect in the image (e.g., ['hi', 'gu'])
             model_tier: "higher" (accurate) or "lower" (cost-effective). Defaults to "higher"
+            custom_prompt: Optional custom prompt to append to the default extraction prompt
             
         Returns:
             Tuple of:
@@ -118,8 +120,17 @@ Do not add any extra commentary or headers."""
         # Load image using PIL
         image = Image.open(str(image_path))
 
-        # Build prompt with language hints if provided
-        prompt = self.EXTRACTION_PROMPT
+        # Build prompt - custom prompt comes first
+        prompt = ""
+        
+        # Add custom prompt first if provided
+        if custom_prompt:
+            prompt += f"{custom_prompt}\n\n"
+        
+        # Add default extraction prompt
+        prompt += self.EXTRACTION_PROMPT
+        
+        # Add language hints if provided
         if languages:
             language_names = {
                 'en': 'English',
@@ -136,6 +147,7 @@ Do not add any extra commentary or headers."""
             lang_names = [language_names.get(lang, lang) for lang in languages]
             prompt += f"\n\nThe image contains text in: {', '.join(lang_names)} this is very important to consider so detect the languages in the text properly and make sure if more than one language is present preserve it and give output accordingly too. Preserve the original language and script exactly."
         
+        # Add table handling instructions
         prompt += "\n\nIMPORTANT: If the image has a table, keep it as a clear row-by-row structure. If it has mixed text and table, extract both maintaining their original layout."
 
         # Get the model to use based on tier
@@ -193,7 +205,8 @@ Do not add any extra commentary or headers."""
         audio_path: str, 
         language_hint: Optional[str] = None, 
         languages: Optional[List[str]] = None,
-        model_tier: str = "higher"
+        model_tier: str = "higher",
+        custom_prompt: Optional[str] = None
     ) -> Tuple[str, str, int, str]:
         """
         Transcribe audio file to text using Gemini audio mode with multi-model support.
@@ -203,6 +216,7 @@ Do not add any extra commentary or headers."""
             language_hint: Optional language hint (e.g., 'en', 'hi', 'gu')
             languages: Optional list of languages expected in the audio
             model_tier: "higher" (accurate) or "lower" (cost-effective). Defaults to "higher"
+            custom_prompt: Optional custom prompt to append to the default transcription prompt
             
         Returns:
             Tuple of:
@@ -237,8 +251,17 @@ Do not add any extra commentary or headers."""
                 audio_file = self.client.files.upload(file=audio_path)
                 logger.debug(f"Audio file uploaded to Gemini: {audio_file.name}")
 
-                # Build prompt with language hint if provided
-                prompt = self.TRANSCRIPTION_PROMPT
+                # Build prompt - custom prompt comes first
+                prompt = ""
+                
+                # Add custom prompt first if provided
+                if custom_prompt:
+                    prompt += f"{custom_prompt}\n\n"
+                
+                # Add default transcription prompt
+                prompt += self.TRANSCRIPTION_PROMPT
+                
+                # Add language hint if provided
                 if language_hint:
                     prompt += f"\nLanguage hint: {language_hint}"
                 elif languages:

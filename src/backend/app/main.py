@@ -66,7 +66,10 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         # Log to both configured logger and stdout so preflight logs appear in console
         log_msg = f"Request: {request.method} {full_url} | Query: {query_params} | Auth: {auth_header}"
         logger.info(log_msg)
-        print(f"[MIDDLEWARE] {log_msg}", flush=True)
+
+        # Also print the body of the request for debugging (may be large)
+        body = await request.body()
+        print(f"[MIDDLEWARE] {log_msg} | Body: {body.decode('utf-8', errors='replace')}", flush=True)
         
         # Capture response
         response = await call_next(request)
