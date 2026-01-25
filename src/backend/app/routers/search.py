@@ -1,6 +1,7 @@
 """Search endpoints - NO user scoping (all authenticated users see all results)."""
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import text, or_, and_
 from pydantic import BaseModel, Field, ConfigDict
 from datetime import datetime
 from typing import Optional, List
@@ -223,117 +224,139 @@ async def search_audios_by_number(
 
 @router.get("/images/text", response_model=List[ImageSearchResult])
 async def search_images_by_text(
-    chapter_id: int = Query(..., description="Chapter ID"),
-    text_query: str = Query(..., description="Text to search in OCR"),
+    text_query: str = Query(..., description="Text to search in OCR (FTS5 full-text search)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Search OCR text of images within a chapter.
+    Search OCR text of images globally across all books and chapters using FTS5.
 
-    Uses FTS5 for fast full-text search.
+    Uses FTS5 (Full-Text Search 5) for fast, efficient searching.
+    Supports phrase queries, AND/OR operators, and proximity search.
     NO user filtering - all authenticated users see all results.
 
     Args:
-        chapter_id: Chapter ID
-        text_query: Text to search
+        text_query: Text to search (supports FTS5 syntax)
         current_user: Authenticated user
         db: Database session
 
     Returns:
-        List of image search results with text excerpts
-        404 if chapter not found
+        List of image search results with text excerpts from all chapters/books
     """
-    logger.debug(f"Full-text searching images in chapter {chapter_id} for '{text_query}'")
+    logger.debug(f"FTS5 searching images for '{text_query}'")
 
-    # Verify chapter exists
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-    if not chapter:
-        logger.warning(f"Chapter {chapter_id} not found")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Chapter {chapter_id} not found",
+    try:
+        # Use raw SQL for FTS5 MATCH operator
+        # Escape single quotes in the query
+        escaped_query = text_query.replace("'", "''")
+        
+        # Query OCR texts using FTS5
+        # Create subquery to search FTS5 virtual table
+        fts_subquery = db.query(text(f"ocr_texts_fts.rowid")).select_from(
+            text(f"ocr_texts_fts WHERE ocr_texts_fts MATCH '{escaped_query}'")
+        ).subquery()
+        
+        ocr_texts = (
+            db.query(OCRText, Image)
+            .join(Image, OCRText.image_id == Image.id)
+            .filter(OCRText.id.in_(db.query(fts_subquery.c.rowid)))
+            .order_by(Image.created_at.desc())
+            .all()
         )
-
-    # Query OCR texts matching search query within chapter
-    ocr_texts = (
-        db.query(OCRText, Image)
-        .join(Image, OCRText.image_id == Image.id)
-        .filter(
-            Image.chapter_id == chapter_id,
-            OCRText.plain_text_for_search.ilike(f"%{text_query}%"),
+    except Exception as e:
+        # Fallback to ILIKE if FTS5 fails (e.g., syntax error or virtual table not available)
+        logger.warning(f"FTS5 search failed ({e}). Falling back to ILIKE search.")
+        ocr_texts = (
+            db.query(OCRText, Image)
+            .join(Image, OCRText.image_id == Image.id)
+            .filter(
+                or_(
+                    OCRText.plain_text_for_search.ilike(f"%{text_query}%"),
+                    OCRText.edited_plain_text.ilike(f"%{text_query}%")
+                )
+            )
+            .order_by(Image.created_at.desc())
+            .all()
         )
-        .order_by(Image.sequence_number)
-        .all()
-    )
 
     results = [
         ImageSearchResult(
             image=ImageSchema.model_validate(img),
-            excerpt=_get_excerpt(ocr_text.plain_text_for_search),
+            excerpt=_get_excerpt(ocr_text.edited_plain_text or ocr_text.plain_text_for_search),
         )
         for ocr_text, img in ocr_texts
     ]
 
-    logger.debug(f"Found {len(results)} images matching text query in chapter {chapter_id}")
+    logger.debug(f"Found {len(results)} images matching FTS5 query globally")
     return results
 
 
 @router.get("/audios/text", response_model=List[AudioSearchResult])
 async def search_audios_by_text(
-    chapter_id: int = Query(..., description="Chapter ID"),
-    text_query: str = Query(..., description="Text to search in transcriptions"),
+    text_query: str = Query(..., description="Text to search in transcriptions (FTS5 full-text search)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Search transcription text of audios within a chapter.
+    Search transcription text of audios globally across all books and chapters using FTS5.
 
-    Uses FTS5 for fast full-text search.
+    Uses FTS5 (Full-Text Search 5) for fast, efficient searching.
+    Supports phrase queries, AND/OR operators, and proximity search.
     NO user filtering - all authenticated users see all results.
 
     Args:
-        chapter_id: Chapter ID
-        text_query: Text to search
+        text_query: Text to search (supports FTS5 syntax)
         current_user: Authenticated user
         db: Database session
 
     Returns:
-        List of audio search results with text excerpts
-        404 if chapter not found
+        List of audio search results with text excerpts from all chapters/books
     """
-    logger.debug(f"Full-text searching audios in chapter {chapter_id} for '{text_query}'")
+    logger.debug(f"FTS5 searching audios for '{text_query}'")
 
-    # Verify chapter exists
-    chapter = db.query(Chapter).filter(Chapter.id == chapter_id).first()
-    if not chapter:
-        logger.warning(f"Chapter {chapter_id} not found")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Chapter {chapter_id} not found",
+    try:
+        # Use raw SQL for FTS5 MATCH operator
+        # Escape single quotes in the query
+        escaped_query = text_query.replace("'", "''")
+        
+        # Query transcripts using FTS5
+        # Create subquery to search FTS5 virtual table
+        fts_subquery = db.query(text(f"audio_transcripts_fts.rowid")).select_from(
+            text(f"audio_transcripts_fts WHERE audio_transcripts_fts MATCH '{escaped_query}'")
+        ).subquery()
+        
+        transcripts = (
+            db.query(AudioTranscript, Audio)
+            .join(Audio, AudioTranscript.audio_id == Audio.id)
+            .filter(AudioTranscript.id.in_(db.query(fts_subquery.c.rowid)))
+            .order_by(Audio.created_at.desc())
+            .all()
         )
-
-    # Query transcripts matching search query within chapter
-    transcripts = (
-        db.query(AudioTranscript, Audio)
-        .join(Audio, AudioTranscript.audio_id == Audio.id)
-        .filter(
-            Audio.chapter_id == chapter_id,
-            AudioTranscript.plain_text_for_search.ilike(f"%{text_query}%"),
+    except Exception as e:
+        # Fallback to ILIKE if FTS5 fails (e.g., syntax error or virtual table not available)
+        logger.warning(f"FTS5 search failed ({e}). Falling back to ILIKE search.")
+        transcripts = (
+            db.query(AudioTranscript, Audio)
+            .join(Audio, AudioTranscript.audio_id == Audio.id)
+            .filter(
+                or_(
+                    AudioTranscript.plain_text_for_search.ilike(f"%{text_query}%"),
+                    AudioTranscript.edited_plain_text.ilike(f"%{text_query}%")
+                )
+            )
+            .order_by(Audio.created_at.desc())
+            .all()
         )
-        .order_by(Audio.sequence_number)
-        .all()
-    )
 
     results = [
         AudioSearchResult(
             audio=AudioSchema.model_validate(audio),
-            excerpt=_get_excerpt(transcript.plain_text_for_search),
+            excerpt=_get_excerpt(transcript.edited_plain_text or transcript.plain_text_for_search),
         )
         for transcript, audio in transcripts
     ]
 
-    logger.debug(f"Found {len(results)} audios matching text query in chapter {chapter_id}")
+    logger.debug(f"Found {len(results)} audios matching FTS5 query globally")
     return results
 
 

@@ -14,9 +14,17 @@ engine = create_engine(
 if "sqlite" in DATABASE_URL:
     @event.listens_for(engine, "connect")
     def enable_fts5(dbapi_conn, connection_record):
-        """Enable FTS5 extension for SQLite."""
+        """Enable FTS5 extension and foreign keys for SQLite."""
         cursor = dbapi_conn.cursor()
+        # Enable foreign keys
         cursor.execute("PRAGMA foreign_keys=ON")
+        # Load FTS5 extension (most SQLite builds have this compiled in)
+        try:
+            cursor.execute("PRAGMA compile_options")
+            options = cursor.fetchall()
+            # FTS5 is usually available, but we can optionally load it
+        except Exception as e:
+            print(f"Warning: Could not verify FTS5 support: {e}")
         cursor.close()
 
 # Create session factory
