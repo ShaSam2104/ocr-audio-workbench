@@ -1,6 +1,7 @@
 """Export endpoints for generating .docx and .txt files with OCR and transcript data."""
 from typing import List, Optional
 from pathlib import Path
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -28,7 +29,10 @@ async def export_folder(
     minio_service: MinIOService = Depends(get_minio_client),
 ) -> FileResponse:
     """
-    Export a book or chapter to .docx or .txt file.
+    Export a book or all its chapters to .docx or .txt file.
+
+    If chapter_id is not provided, exports all chapters of the book.
+    If chapter_id is provided, exports only that specific chapter.
 
     NO user verification - just verify book/chapter exist.
     All authenticated users can export any book/chapter.
@@ -65,6 +69,12 @@ async def export_folder(
         if not chapter:
             logger.warning(f"Chapter not found: {request.chapter_id} in book {request.book_id}")
             raise HTTPException(status_code=404, detail="Chapter not found")
+    else:
+        # If chapter_id is not provided, verify book has chapters
+        chapters_count = db.query(Chapter).filter(Chapter.book_id == request.book_id).count()
+        if chapters_count == 0:
+            logger.warning(f"Book {request.book_id} has no chapters")
+            raise HTTPException(status_code=400, detail="Book has no chapters to export")
 
     # Validate format
     if request.format not in ["docx", "txt"]:
@@ -101,15 +111,19 @@ async def export_folder(
         chapter_name = chapter.name.replace(" ", "_").replace("/", "_")
         filename = f"{book_name}_{chapter_name}.{ext}"
     else:
-        filename = f"{book_name}.{ext}"
+        # Exporting all chapters
+        filename = f"{book_name}_all_chapters.{ext}"
 
     logger.info(f"Returning export file: {filename}")
+
+    # Encode filename for RFC 5987 compatibility (handles non-Latin-1 characters)
+    encoded_filename = quote(filename, safe="")
 
     return FileResponse(
         path=export_file_path,
         media_type=media_type,
         filename=filename,
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
     )
 
 
@@ -192,9 +206,12 @@ async def export_selection(
 
     logger.info(f"Returning export file: {filename}")
 
+    # Encode filename for RFC 5987 compatibility (handles non-Latin-1 characters)
+    encoded_filename = quote(filename, safe="")
+
     return FileResponse(
         path=export_file_path,
         media_type=media_type,
         filename=filename,
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
     )

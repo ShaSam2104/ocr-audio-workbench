@@ -35,6 +35,7 @@ class ExportService:
         - **bold text** -> bold
         - *italic text* -> italic
         - `code text` -> monospaced
+        - ~~strikethrough~~ -> strikethrough
         - # Heading -> h1 (handled separately)
         - - bullet -> bullet (handled separately)
 
@@ -45,9 +46,10 @@ class ExportService:
         if not text:
             return
 
-        # Pattern to find markdown formatting
-        # This regex finds: **bold**, *italic*, `code`
-        pattern = r'(\*\*.*?\*\*|\*.*?\*|`.*?`)'
+        # Pattern to find markdown formatting (ordered by precedence)
+        # This regex finds: **bold**, *italic*, `code`, ~~strikethrough~~
+        # Use non-greedy matching and avoid overlapping patterns
+        pattern = r'(\*\*.*?\*\*|~~.*?~~|\*[^*]+\*|`[^`]+`)'
         
         last_end = 0
         for match in re.finditer(pattern, text):
@@ -61,6 +63,10 @@ class ExportService:
                 # Bold
                 run = paragraph.add_run(matched_text[2:-2])
                 run.bold = True
+            elif matched_text.startswith('~~') and matched_text.endswith('~~'):
+                # Strikethrough
+                run = paragraph.add_run(matched_text[2:-2])
+                run.font.strike = True
             elif matched_text.startswith('*') and matched_text.endswith('*'):
                 # Italic
                 run = paragraph.add_run(matched_text[1:-1])
@@ -77,15 +83,121 @@ class ExportService:
         if last_end < len(text):
             paragraph.add_run(text[last_end:])
 
+    def _markdown_to_plain_text(self, text: str) -> str:
+        """
+        Convert markdown-formatted text to plain text (remove markdown syntax).
+        
+        Removes:
+        - **bold** -> bold
+        - *italic* -> italic
+        - `code` -> code
+        - ~~strikethrough~~ -> strikethrough
+        - # Heading -> Heading
+        - ## Heading -> Heading
+        - - bullet -> bullet
+
+        Args:
+            text: Text with markdown formatting
+
+        Returns:
+            Plain text without markdown syntax
+        """
+        if not text:
+            return text
+
+        # Remove bold (**text** -> text)
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+        # Remove italic (*text* -> text)
+        text = re.sub(r'\*([^*]+)\*', r'\1', text)
+        # Remove strikethrough (~~text~~ -> text)
+        text = re.sub(r'~~([^~]+)~~', r'\1', text)
+        # Remove code blocks (`text` -> text)
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+        # Remove headings (# text -> text)
+        text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+        
+        return text
+
+
+    def _parse_markdown_table(self, lines: List[str], start_idx: int) -> Tuple[int, List[List[str]]]:
+        """
+        Parse a markdown table starting at the given line index.
+        
+        Returns the index of the first line after the table and the parsed table data.
+
+        Args:
+            lines: List of text lines
+            start_idx: Index of the first table line (header row with |)
+
+        Returns:
+            Tuple of (end_index, table_data) where table_data is list of rows, each row is list of cells
+        """
+        table_data = []
+        i = start_idx
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # Check if this is a table row (starts and ends with |)
+            if not line.startswith('|') or not line.endswith('|'):
+                break
+            
+            # Skip separator rows (e.g., | --- | --- |)
+            if all(c in '|-' or c.isspace() for c in line):
+                i += 1
+                continue
+            
+            # Parse cells from this row
+            # Remove leading and trailing pipes, then split by pipe
+            cells = [cell.strip() for cell in line[1:-1].split('|')]
+            table_data.append(cells)
+            i += 1
+        
+        return i, table_data
+
+    def _add_table_to_docx(self, doc: Document, table_data: List[List[str]]) -> None:
+        """
+        Add a parsed markdown table to a docx document.
+
+        Args:
+            doc: python-docx Document object
+            table_data: List of rows, each row is a list of cells
+        """
+        if not table_data:
+            return
+        
+        # Create table (rows + 1 for potential header)
+        num_rows = len(table_data)
+        num_cols = max(len(row) for row in table_data) if table_data else 0
+        
+        if num_rows == 0 or num_cols == 0:
+            return
+        
+        table = doc.add_table(rows=num_rows, cols=num_cols)
+        table.style = 'Table Grid'
+        
+        # Fill table cells with data and apply markdown formatting
+        for row_idx, row_data in enumerate(table_data):
+            for col_idx, cell_text in enumerate(row_data):
+                if col_idx < num_cols:
+                    cell = table.rows[row_idx].cells[col_idx]
+                    cell.text = cell_text
+                    
+                    # Apply markdown formatting to cell content
+                    if cell.paragraphs:
+                        cell.paragraphs[0].clear()
+                        self._parse_markdown_to_docx_runs(cell_text, cell.paragraphs[0])
+
     def _add_markdown_text_to_docx(self, doc: Document, text: str) -> None:
         """
         Add markdown-formatted text to a docx document.
         
         Handles:
+        - | Markdown tables | with | pipes |
         - # Heading 1
         - ## Heading 2
         - ### Heading 3
-        - **bold**, *italic*, `code`
+        - **bold**, *italic*, `code`, ~~strikethrough~~
         - Empty lines (paragraph breaks)
         - Regular paragraphs
 
@@ -94,13 +206,24 @@ class ExportService:
             text: Text with markdown formatting
         """
         lines = text.split('\n')
+        i = 0
         
-        for line in lines:
+        while i < len(lines):
+            line = lines[i]
             line_stripped = line.strip()
             
             if not line_stripped:
                 # Empty line - add spacing
                 doc.add_paragraph()
+                i += 1
+                continue
+            
+            # Check if this is a table row (starts with |)
+            if line_stripped.startswith('|') and line_stripped.endswith('|'):
+                # Parse the table starting from this line
+                end_idx, table_data = self._parse_markdown_table(lines, i)
+                self._add_table_to_docx(doc, table_data)
+                i = end_idx
                 continue
             
             # Check for headings
@@ -118,6 +241,8 @@ class ExportService:
                 # Regular paragraph with potential markdown formatting
                 paragraph = doc.add_paragraph()
                 self._parse_markdown_to_docx_runs(line_stripped, paragraph)
+            
+            i += 1
 
     def generate_docx(
         self,
@@ -129,6 +254,8 @@ class ExportService:
     ) -> str:
         """
         Generate .docx file with OCR text and transcripts with proper markdown formatting.
+
+        Prioritizes edited text over raw extracted text. Removes explicit item headers.
 
         Args:
             images: List of Image objects with sequence numbers (sorted by sequence)
@@ -145,16 +272,20 @@ class ExportService:
 
         # Add images and their OCR text
         if include_images and images:
-            doc.add_heading("Images", level=1)
+            if images:
+                doc.add_heading("Images", level=1)
             for img in images:
-                # Add image heading with sequence number
-                doc.add_heading(f"Image {img.sequence_number}", level=2)
-
                 # Find OCR text for this image
                 ocr_text = next((o for o in ocr_texts if o.image_id == img.id), None)
                 if ocr_text:
+                    # Prioritize edited text over raw text
+                    text_to_use = (
+                        ocr_text.edited_text_with_formatting 
+                        if ocr_text.edited_text_with_formatting 
+                        else ocr_text.raw_text_with_formatting
+                    )
                     # Add markdown-formatted text
-                    self._add_markdown_text_to_docx(doc, ocr_text.raw_text_with_formatting)
+                    self._add_markdown_text_to_docx(doc, text_to_use)
                 else:
                     doc.add_paragraph("[No OCR text available]")
 
@@ -162,22 +293,17 @@ class ExportService:
         if audios:
             doc.add_heading("Audio Transcripts", level=1)
             for audio in audios:
-                # Add audio heading with sequence number
-                doc.add_heading(f"Audio {audio.sequence_number}", level=2)
-
-                # Add metadata
-                metadata = f"Format: {audio.audio_format or 'unknown'}"
-                if audio.duration_seconds:
-                    minutes = audio.duration_seconds // 60
-                    seconds = audio.duration_seconds % 60
-                    metadata += f" | Duration: {minutes}m {seconds}s"
-                doc.add_paragraph(metadata, style="Normal")
-
                 # Find transcript for this audio
                 transcript = next((t for t in transcripts if t.audio_id == audio.id), None)
                 if transcript:
+                    # Prioritize edited text over raw text
+                    text_to_use = (
+                        transcript.edited_text_with_formatting 
+                        if transcript.edited_text_with_formatting 
+                        else transcript.raw_text_with_formatting
+                    )
                     # Add markdown-formatted text
-                    self._add_markdown_text_to_docx(doc, transcript.raw_text_with_formatting)
+                    self._add_markdown_text_to_docx(doc, text_to_use)
                 else:
                     doc.add_paragraph("[No transcript available]")
 
@@ -196,7 +322,9 @@ class ExportService:
         include_images: bool = True,
     ) -> str:
         """
-        Generate .txt file with OCR text and transcripts (preserving markdown tags).
+        Generate .txt file with OCR text and transcripts with markdown formatting applied.
+
+        Prioritizes edited text over raw extracted text. Removes markdown syntax.
 
         Args:
             images: List of Image objects with sequence numbers (sorted by sequence)
@@ -209,59 +337,46 @@ class ExportService:
             Path to generated .txt file
         """
         content = []
-        content.append("=" * 80)
-        content.append("OCR WORKBENCH EXPORT")
-        content.append("=" * 80)
-        content.append("")
 
         # Add images and their OCR text
         if include_images and images:
-            content.append("IMAGES")
-            content.append("-" * 80)
             for img in images:
-                content.append(f"\nImage {img.sequence_number}")
-                content.append("-" * 40)
-
                 # Find OCR text for this image
                 ocr_text = next((o for o in ocr_texts if o.image_id == img.id), None)
                 if ocr_text:
-                    # Add formatted text with markdown tags intact
-                    content.append(ocr_text.raw_text_with_formatting)
+                    # Prioritize edited text over raw text
+                    text_to_use = (
+                        ocr_text.edited_text_with_formatting 
+                        if ocr_text.edited_text_with_formatting 
+                        else ocr_text.raw_text_with_formatting
+                    )
+                    # Convert markdown to plain text and add
+                    plain_text = self._markdown_to_plain_text(text_to_use)
+                    content.append(plain_text)
+                    content.append("")  # Add spacing between items
                 else:
                     content.append("[No OCR text available]")
-            content.append("")
+                    content.append("")
 
         # Add audio transcripts
         if audios:
-            content.append("AUDIO TRANSCRIPTS")
-            content.append("-" * 80)
             for audio in audios:
-                content.append(f"\nAudio {audio.sequence_number}")
-                content.append("-" * 40)
-
-                # Add metadata
-                metadata_parts = []
-                if audio.audio_format:
-                    metadata_parts.append(f"Format: {audio.audio_format}")
-                if audio.duration_seconds:
-                    minutes = audio.duration_seconds // 60
-                    seconds = audio.duration_seconds % 60
-                    metadata_parts.append(f"Duration: {minutes}m {seconds}s")
-                if metadata_parts:
-                    content.append(f"[{' | '.join(metadata_parts)}]")
-
                 # Find transcript for this audio
                 transcript = next((t for t in transcripts if t.audio_id == audio.id), None)
                 if transcript:
-                    # Add formatted text with markdown tags intact
-                    content.append(transcript.raw_text_with_formatting)
+                    # Prioritize edited text over raw text
+                    text_to_use = (
+                        transcript.edited_text_with_formatting 
+                        if transcript.edited_text_with_formatting 
+                        else transcript.raw_text_with_formatting
+                    )
+                    # Convert markdown to plain text and add
+                    plain_text = self._markdown_to_plain_text(text_to_use)
+                    content.append(plain_text)
+                    content.append("")  # Add spacing between items
                 else:
                     content.append("[No transcript available]")
-            content.append("")
-
-        content.append("=" * 80)
-        content.append("END OF EXPORT")
-        content.append("=" * 80)
+                    content.append("")
 
         # Save to temp file
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:

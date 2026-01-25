@@ -9,7 +9,7 @@ load_dotenv()
 # JWT Configuration
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production-12345")
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 45
+ACCESS_TOKEN_EXPIRE_MINUTES = 600  # 10 hours
 
 # Database Configuration
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ocr_workbench.db")
