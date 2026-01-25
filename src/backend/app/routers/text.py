@@ -85,6 +85,9 @@ class AudioTranscriptResponse(BaseModel):
     duration_seconds: Optional[int] = None  # Original audio duration
     created_at: datetime  # When transcription was extracted
     
+    # Audio access
+    audio_url: Optional[str] = None  # Signed/presigned URL for audio access (30 mins)
+    
     # Manual edit fields (user corrections)
     edited_text_with_formatting: Optional[str] = None  # User-edited text with formatting
     edited_plain_text: Optional[str] = None  # User-edited plain text
@@ -262,21 +265,24 @@ async def get_audio_transcript(
     audio_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
 ):
     """
-    Retrieve transcription text for an audio file with complete audio metadata.
+    Retrieve transcription text for an audio file with complete audio metadata and signed URL.
 
     NO user verification - all authenticated users can access all audios.
     Returns complete audio details along with transcript, matching the structure
     from /books/{book_id}/chapters/{chapter_id}/audios endpoint.
+    Includes presigned URL for audio access (valid for 30 minutes).
 
     Args:
         audio_id: Audio ID
         current_user: Authenticated user (any user can access any audio)
         db: Database session
+        minio_service: MinIO service for generating signed URLs
 
     Returns:
-        Complete audio details with transcript (includes user edits if available)
+        Complete audio details with transcript (includes user edits if available) and signed URL
         404 if audio not found or transcription not completed
     """
     logger.debug(f"Retrieving transcript for audio {audio_id}")
@@ -299,6 +305,19 @@ async def get_audio_transcript(
             detail=f"Transcript not found for audio {audio_id}",
         )
 
+    # Generate presigned URL for audio (30 mins = 1800 seconds)
+    audio_url = None
+    try:
+        audio_url = await minio_service.get_presigned_url(
+            bucket="audio",
+            object_key=audio.object_key,
+            expiration=1800,  # 30 minutes
+        )
+        logger.debug(f"Generated presigned URL for audio {audio_id}")
+    except Exception as e:
+        logger.warning(f"Failed to generate presigned URL for audio {audio_id}: {e}")
+        # Don't fail the request, just skip the URL
+
     logger.debug(f"Transcript retrieved for audio {audio_id}")
 
     return AudioTranscriptResponse(
@@ -317,6 +336,8 @@ async def get_audio_transcript(
         model_used=getattr(transcript, 'model_used', None),
         duration_seconds=audio.duration_seconds,
         created_at=transcript.created_at,
+        # Audio access
+        audio_url=audio_url,
         # Manual edit fields
         edited_text_with_formatting=transcript.edited_text_with_formatting,
         edited_plain_text=transcript.edited_plain_text,
@@ -394,6 +415,8 @@ async def update_audio_transcript(
         model_used=getattr(transcript, 'model_used', None),
         duration_seconds=audio.duration_seconds,
         created_at=transcript.created_at,
+        # Audio access - not needed on update but can be added if needed
+        audio_url=None,
         # Manual edit fields
         edited_text_with_formatting=transcript.edited_text_with_formatting,
         edited_plain_text=transcript.edited_plain_text,

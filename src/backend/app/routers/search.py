@@ -7,8 +7,10 @@ from datetime import datetime
 from typing import Optional, List
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_minio_client
 from app.models.user import User
+from app.services.minio_service import MinIOService
+from app.config import MINIO_IMAGE_BUCKET, MINIO_AUDIO_BUCKET
 from app.models.hierarchy import Book, Chapter
 from app.models.image import Image
 from app.models.audio import Audio
@@ -27,21 +29,23 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 class ImageSearchResult(BaseModel):
-    """Search result for image with excerpt."""
+    """Search result for image with excerpt and signed URL."""
 
     model_config = ConfigDict(from_attributes=True)
 
     image: ImageSchema
     excerpt: str = Field(..., description="Text excerpt from OCR (first 200 chars)")
+    image_url: Optional[str] = Field(None, description="Presigned URL for image access (30 mins)")
 
 
 class AudioSearchResult(BaseModel):
-    """Search result for audio with excerpt."""
+    """Search result for audio with excerpt and signed URL."""
 
     model_config = ConfigDict(from_attributes=True)
 
     audio: AudioSchema
     excerpt: str = Field(..., description="Text excerpt from transcript (first 200 chars)")
+    audio_url: Optional[str] = Field(None, description="Presigned URL for audio access (30 mins)")
 
 
 class CombinedSearchResult(BaseModel):
@@ -227,6 +231,7 @@ async def search_images_by_text(
     text_query: str = Query(..., description="Text to search in OCR (FTS5 full-text search)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
 ):
     """
     Search OCR text of images globally across all books and chapters using FTS5.
@@ -234,14 +239,16 @@ async def search_images_by_text(
     Uses FTS5 (Full-Text Search 5) for fast, efficient searching.
     Supports phrase queries, AND/OR operators, and proximity search.
     NO user filtering - all authenticated users see all results.
+    Includes presigned URLs for image access (valid for 30 minutes).
 
     Args:
         text_query: Text to search (supports FTS5 syntax)
         current_user: Authenticated user
         db: Database session
+        minio_service: MinIO service for generating signed URLs
 
     Returns:
-        List of image search results with text excerpts from all chapters/books
+        List of image search results with text excerpts and signed URLs from all chapters/books
     """
     logger.debug(f"FTS5 searching images for '{text_query}'")
 
@@ -279,13 +286,27 @@ async def search_images_by_text(
             .all()
         )
 
-    results = [
-        ImageSearchResult(
-            image=ImageSchema.model_validate(img),
-            excerpt=_get_excerpt(ocr_text.edited_plain_text or ocr_text.plain_text_for_search),
+    results = []
+    for ocr_text, img in ocr_texts:
+        # Generate presigned URL for image (30 mins = 1800 seconds)
+        image_url = None
+        try:
+            image_url = await minio_service.get_presigned_url(
+                bucket=MINIO_IMAGE_BUCKET,
+                object_key=img.object_key,
+                expiration=1800,  # 30 minutes
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate presigned URL for image {img.id}: {e}")
+            # Don't fail the request, just skip the URL
+        
+        results.append(
+            ImageSearchResult(
+                image=ImageSchema.model_validate(img),
+                excerpt=_get_excerpt(ocr_text.edited_plain_text or ocr_text.plain_text_for_search),
+                image_url=image_url,
+            )
         )
-        for ocr_text, img in ocr_texts
-    ]
 
     logger.debug(f"Found {len(results)} images matching FTS5 query globally")
     return results
@@ -296,6 +317,7 @@ async def search_audios_by_text(
     text_query: str = Query(..., description="Text to search in transcriptions (FTS5 full-text search)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
 ):
     """
     Search transcription text of audios globally across all books and chapters using FTS5.
@@ -303,14 +325,16 @@ async def search_audios_by_text(
     Uses FTS5 (Full-Text Search 5) for fast, efficient searching.
     Supports phrase queries, AND/OR operators, and proximity search.
     NO user filtering - all authenticated users see all results.
+    Includes presigned URLs for audio access (valid for 30 minutes).
 
     Args:
         text_query: Text to search (supports FTS5 syntax)
         current_user: Authenticated user
         db: Database session
+        minio_service: MinIO service for generating signed URLs
 
     Returns:
-        List of audio search results with text excerpts from all chapters/books
+        List of audio search results with text excerpts and signed URLs from all chapters/books
     """
     logger.debug(f"FTS5 searching audios for '{text_query}'")
 
@@ -348,13 +372,27 @@ async def search_audios_by_text(
             .all()
         )
 
-    results = [
-        AudioSearchResult(
-            audio=AudioSchema.model_validate(audio),
-            excerpt=_get_excerpt(transcript.edited_plain_text or transcript.plain_text_for_search),
+    results = []
+    for transcript, audio in transcripts:
+        # Generate presigned URL for audio (30 mins = 1800 seconds)
+        audio_url = None
+        try:
+            audio_url = await minio_service.get_presigned_url(
+                bucket=MINIO_AUDIO_BUCKET,
+                object_key=audio.object_key,
+                expiration=1800,  # 30 minutes
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate presigned URL for audio {audio.id}: {e}")
+            # Don't fail the request, just skip the URL
+        
+        results.append(
+            AudioSearchResult(
+                audio=AudioSchema.model_validate(audio),
+                excerpt=_get_excerpt(transcript.edited_plain_text or transcript.plain_text_for_search),
+                audio_url=audio_url,
+            )
         )
-        for transcript, audio in transcripts
-    ]
 
     logger.debug(f"Found {len(results)} audios matching FTS5 query globally")
     return results

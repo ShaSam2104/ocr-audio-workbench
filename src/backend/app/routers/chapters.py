@@ -21,7 +21,7 @@ from app.schemas.response import MessageResponse
 from app.schemas.audio import BatchAudioReorderSchema
 from app.dependencies import get_current_user, get_minio_client
 from app.services.minio_service import MinIOService
-from app.config import MINIO_IMAGE_BUCKET
+from app.config import MINIO_IMAGE_BUCKET, MINIO_AUDIO_BUCKET
 from app.logger import logger
 
 router = APIRouter(tags=["chapters"])
@@ -199,6 +199,7 @@ async def get_chapter_audios(
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    minio_service: MinIOService = Depends(get_minio_client),
 ) -> dict:
     """
     Retrieve chapter details with paginated audio files and their transcripts.
@@ -266,12 +267,24 @@ async def get_chapter_audios(
                 "created_at": transcript.created_at,
             }
         
+        # Generate presigned URL for audio (30 mins = 1800 seconds)
+        audio_url = None
+        try:
+            audio_url = await minio_service.get_presigned_url(
+                bucket=MINIO_AUDIO_BUCKET,
+                object_key=audio.object_key,
+                expiration=1800,  # 30 minutes
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate presigned URL for audio {audio.id}: {e}")
+        
         audio_content = AudioContentSchema(
             id=audio.id,
             sequence_number=audio.sequence_number,
             duration_seconds=audio.duration_seconds,
             audio_format=audio.audio_format,
             transcription_status=audio.transcription_status,
+            audio_url=audio_url,
             transcript=transcript_data,
         )
         audios_content.append(audio_content)

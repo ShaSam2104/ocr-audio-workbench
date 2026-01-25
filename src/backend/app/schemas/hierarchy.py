@@ -104,6 +104,7 @@ class AudioContentSchema(BaseModel):
     duration_seconds: Optional[int] = None
     audio_format: Optional[str] = None
     transcription_status: str
+    audio_url: Optional[str] = None  # Presigned URL for 30 mins
     transcript: Optional[Dict[str, Any]] = None  # AudioTranscriptSchema when available
 
 
