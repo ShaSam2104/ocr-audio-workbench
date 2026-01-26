@@ -172,7 +172,7 @@ async def upload_audios(
                 # Get next sequence number
                 sequence_number = get_next_sequence_number(chapter_id, db)
                 
-                # Prepare object key: audio/{chapter_id}/{audio_id}.{ext}
+                # Prepare object key: {chapter_id}/{audio_id}.{ext} (bucket already specifies type)
                 file_ext = Path(file.filename).suffix.lower()
                 
                 # Create audio record with temporary object_key
@@ -189,7 +189,7 @@ async def upload_audios(
                 db.flush()  # Get the audio ID without committing
                 
                 audio_id = audio.id
-                object_key = f"audio/{chapter_id}/{audio_id}{file_ext}"
+                object_key = f"{chapter_id}/{audio_id}{file_ext}"
 
                 # Upload to MinIO
                 upload_result = await minio_service.upload_file(

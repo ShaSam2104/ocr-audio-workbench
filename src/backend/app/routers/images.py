@@ -140,7 +140,7 @@ async def upload_images(
                 # Get next sequence number
                 sequence_number = get_next_sequence_number(chapter_id, db)
                 
-                # Prepare object key: images/{chapter_id}/{image_id}.{ext}
+                # Prepare object key: {chapter_id}/{image_id}.{ext} (bucket already specifies type)
                 # We need to save the record first to get the ID, then update object_key
                 file_ext = Path(file.filename).suffix.lower()
                 
@@ -157,7 +157,7 @@ async def upload_images(
                 db.flush()  # Get the image ID without committing
                 
                 image_id = image.id
-                object_key = f"images/{chapter_id}/{image_id}{file_ext}"
+                object_key = f"{chapter_id}/{image_id}{file_ext}"
 
                 # Upload to MinIO
                 upload_result = await minio_service.upload_file(

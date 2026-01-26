@@ -12,7 +12,7 @@ class Image(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     chapter_id = Column(Integer, ForeignKey("chapters.id", ondelete="CASCADE"), nullable=False)
-    object_key = Column(String(500), nullable=False)  # Path in MinIO: images/{chapter_id}/{image_id}.{ext}
+    object_key = Column(String(500), nullable=False)  # Path in MinIO: {chapter_id}/{image_id}.{ext} (bucket is 'images')
     filename = Column(String(255), nullable=False)
     sequence_number = Column(Integer, nullable=False)  # Per chapter scope
     page_number = Column(Integer, nullable=True)  # For PDFs (which page it came from)
