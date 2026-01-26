@@ -7,7 +7,7 @@ from app.database import get_db
 from app.models.user import User
 from app.auth import decode_access_token
 from app.services.minio_service import MinIOService
-from app.config import MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE
+from app.config import MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_SECURE, MINIO_PUBLIC_ENDPOINT
 from app.logger import logger
 
 
@@ -29,6 +29,7 @@ def get_minio_client() -> MinIOService:
             access_key=MINIO_ACCESS_KEY,
             secret_key=MINIO_SECRET_KEY,
             secure=MINIO_SECURE,
+            public_endpoint=MINIO_PUBLIC_ENDPOINT,
         )
     return _minio_service
 

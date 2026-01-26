@@ -13,15 +13,16 @@ logger = logging.getLogger(__name__)
 class MinIOService:
     """MinIO client for image and audio storage."""
 
-    def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False):
+    def __init__(self, endpoint: str, access_key: str, secret_key: str, secure: bool = False, public_endpoint: Optional[str] = None):
         """
         Initialize MinIO client using official minio library.
 
         Args:
-            endpoint: MinIO endpoint (e.g., "localhost:9000" or "minio.example.com")
+            endpoint: MinIO endpoint for internal access (e.g., "minio:9000")
             access_key: MinIO access key
             secret_key: MinIO secret key
             secure: Use HTTPS (True) or HTTP (False)
+            public_endpoint: MinIO endpoint for public URLs (e.g., "localhost:9000" or "192.168.29.22:9000")
         """
         self.client = Minio(
             endpoint=endpoint,
@@ -30,7 +31,8 @@ class MinIOService:
             secure=secure,
         )
         self.endpoint = endpoint
-        logger.info(f"MinIO client initialized: {endpoint}")
+        self.public_endpoint = public_endpoint or endpoint
+        logger.info(f"MinIO client initialized: internal={endpoint}, public={self.public_endpoint}")
 
     async def ensure_buckets_exist(self, buckets: list[str]) -> None:
         """
@@ -149,18 +151,35 @@ class MinIOService:
             expiration: URL expiration time in seconds
 
         Returns:
-            Presigned URL
+            Presigned URL with public endpoint
         """
         try:
+            from urllib.parse import urlparse, urlunparse
+
             # Convert seconds to timedelta (MinIO SDK requires timedelta)
             expires_delta = timedelta(seconds=expiration)
-            
+
             # Use presigned_get_object for S3-compatible APIs
             url = self.client.presigned_get_object(
                 bucket_name=bucket,
                 object_name=object_key,
                 expires=expires_delta,
             )
+
+            # Replace hostname with public endpoint if different
+            if self.public_endpoint != self.endpoint:
+                parsed = urlparse(url)
+                public_url = urlunparse((
+                    parsed.scheme,
+                    self.public_endpoint,
+                    parsed.path,
+                    parsed.params,
+                    parsed.query,
+                    parsed.fragment
+                ))
+                logger.info(f"Generated presigned URL for minio://{bucket}/{object_key} using public endpoint")
+                return public_url
+
             logger.info(f"Generated presigned URL for minio://{bucket}/{object_key}")
             return url
         except S3Error as e:
