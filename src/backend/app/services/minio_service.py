@@ -22,8 +22,11 @@ class MinIOService:
             access_key: MinIO access key
             secret_key: MinIO secret key
             secure: Use HTTPS (True) or HTTP (False)
-            public_endpoint: MinIO endpoint for public URLs (e.g., "localhost:9000" or "192.168.29.22:9000")
+            public_endpoint: MinIO endpoint for public URLs (e.g., "127.0.0.1:9000" or "192.168.29.22:9000")
         """
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.secure = secure
         self.client = Minio(
             endpoint=endpoint,
             access_key=access_key,
@@ -168,9 +171,9 @@ class MinIOService:
             if self.public_endpoint != self.endpoint:
                 public_client = MinioClient(
                     endpoint=self.public_endpoint,
-                    access_key=self.client._access_key,
-                    secret_key=self.client._secret_key,
-                    secure=self.client._secure,
+                    access_key=self.access_key,
+                    secret_key=self.secret_key,
+                    secure=self.secure,
                     region='us-east-1',
                 )
                 url = public_client.presigned_get_object(
