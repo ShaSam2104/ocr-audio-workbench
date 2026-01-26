@@ -29,6 +29,7 @@ class MinIOService:
             access_key=access_key,
             secret_key=secret_key,
             secure=secure,
+            region='us-east-1',  # Set region explicitly for presigned URL compatibility
         )
         self.endpoint = endpoint
         self.public_endpoint = public_endpoint or endpoint
@@ -154,33 +155,38 @@ class MinIOService:
             Presigned URL with public endpoint
         """
         try:
-            from urllib.parse import urlparse, urlunparse
-
             # Convert seconds to timedelta (MinIO SDK requires timedelta)
             expires_delta = timedelta(seconds=expiration)
 
-            # Use presigned_get_object for S3-compatible APIs
-            url = self.client.presigned_get_object(
-                bucket_name=bucket,
-                object_name=object_key,
-                expires=expires_delta,
-            )
+            # Generate presigned URL with public endpoint directly
+            # We need to create a temporary client with the public endpoint
+            # because the signature is tied to the hostname
+            from minio import Minio as MinioClient
+            from urllib.parse import urlparse, urlunparse
 
-            # Replace hostname with public endpoint if different
+            # Parse the public endpoint to get scheme and host
             if self.public_endpoint != self.endpoint:
-                parsed = urlparse(url)
-                public_url = urlunparse((
-                    parsed.scheme,
-                    self.public_endpoint,
-                    parsed.path,
-                    parsed.params,
-                    parsed.query,
-                    parsed.fragment
-                ))
+                public_client = MinioClient(
+                    endpoint=self.public_endpoint,
+                    access_key=self.client._access_key,
+                    secret_key=self.client._secret_key,
+                    secure=self.client._secure,
+                    region='us-east-1',
+                )
+                url = public_client.presigned_get_object(
+                    bucket_name=bucket,
+                    object_name=object_key,
+                    expires=expires_delta,
+                )
                 logger.info(f"Generated presigned URL for minio://{bucket}/{object_key} using public endpoint")
-                return public_url
+            else:
+                url = self.client.presigned_get_object(
+                    bucket_name=bucket,
+                    object_name=object_key,
+                    expires=expires_delta,
+                )
+                logger.info(f"Generated presigned URL for minio://{bucket}/{object_key}")
 
-            logger.info(f"Generated presigned URL for minio://{bucket}/{object_key}")
             return url
         except S3Error as e:
             logger.error(f"Failed to generate presigned URL: {e}")
