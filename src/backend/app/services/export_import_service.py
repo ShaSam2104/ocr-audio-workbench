@@ -1113,7 +1113,7 @@ class ExportImportService:
         yield f'"total_chapters": {total_chapters}, '
         yield f'"total_images": {total_images}, '
         yield f'"total_audios": {total_audios}'
-        yield '}}'
+        yield '}}}'  # Close metadata, data object, and root object
 
         logger.info(
             f"Streamed export: {total_books} books, {total_chapters} chapters, "
