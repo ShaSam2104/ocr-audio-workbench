@@ -1029,12 +1029,13 @@ class ExportImportService:
                         yield '"detected_language": ' + json.dumps(image.ocr_text.detected_language) + ', '
                         yield '"model_used": ' + json.dumps(image.ocr_text.model_used) + '}'
 
-                    # Close image object
-                    yield '}], ' if image_idx < len(chapter.images) - 1 else '}]'
+                    # Close image object (comma if more images, no comma if last image)
+                    yield '}, ' if image_idx < len(chapter.images) - 1 else '}'
 
                     total_images += 1
 
-                yield ', "audios": ['
+                # Close images array and open audios array
+                yield '], "audios": ['
 
                 for audio_idx, audio in enumerate(chapter.audios):
                     audio_uuid = self._generate_uuid()
@@ -1083,20 +1084,24 @@ class ExportImportService:
                         yield '"detected_language": ' + json.dumps(audio.transcript.detected_language) + ', '
                         yield '"model_used": ' + json.dumps(audio.transcript.model_used) + '}'
 
-                    # Close audio object
-                    yield '}}, ' if audio_idx < len(chapter.audios) - 1 else '}}'
+                    # Close audio object (comma if more audios, no comma if last audio)
+                    yield '}, ' if audio_idx < len(chapter.audios) - 1 else '}'
 
                     total_audios += 1
 
-                # End chapter
-                yield '}]}, ' if chapter_idx < len(book.chapters) - 1 else '}]}'
+                # Close audios array and chapter object
+                yield ']}'  # Close audios array and chapter object
+                # Add comma if more chapters, no comma if last chapter
+                yield ', ' if chapter_idx < len(book.chapters) - 1 else ''
 
                 total_chapters += 1
 
-            # End book
-            yield '}]}, ' if book_idx < total_books - 1 else '}]}'
+            # Close book object and books array
+                yield '}]}'  # Close chapters array and book object
+                # Add comma if more books, no comma if last book
+                yield ', ' if book_idx < total_books - 1 else ''
 
-        # Close data and add metadata
+        # Close data array and add metadata
         yield '], "metadata": {'
         yield f'"total_books": {total_books}, '
         yield f'"total_chapters": {total_chapters}, '
