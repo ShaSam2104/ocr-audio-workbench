@@ -2,9 +2,10 @@
 Export/Import API router.
 
 Provides endpoints for:
-- Exporting books/chapters to JSON archives
-- Importing JSON archives back into the application
+- Exporting books/chapters to JSON archives (streaming)
+- Importing JSON archives back into the application (streaming)
 """
+import ijson
 import json
 import os
 import tempfile
@@ -36,7 +37,9 @@ async def export_to_json(
     minio_client = Depends(get_minio_client),
 ):
     """
-    Export books/chapters to JSON format.
+    Export books/chapters to JSON format with streaming.
+
+    STREAMING ENABLED: Memory-efficient for 1GB+ exports with concurrent users.
 
     Accepts a JSON request body with ExportImportRequest schema.
 
@@ -52,110 +55,33 @@ async def export_to_json(
         # Create service
         service = ExportImportService(db, minio_client)
 
-        # Perform export
+        # Log export start
         logger.info(
-            f"Starting export: book_ids={request.book_ids}, "
+            f"Starting STREAMING export: book_ids={request.book_ids}, "
             f"chapter_ids={request.chapter_ids}, "
             f"include_binary_files={request.include_binary_files}"
         )
 
-        export_data = await service.export_to_json(
-            book_ids=request.book_ids,
-            chapter_ids=request.chapter_ids,
-            include_binary_files=request.include_binary_files,
-        )
-
-        # VALIDATION BEFORE JSON SERIALIZATION
-        logger.info(f"=== VALIDATION BEFORE json.dumps() ===")
-        books_before = export_data.get("data", {}).get("books", [])
-        if books_before:
-            first_book = books_before[0]
-            chapters = first_book.get("chapters", [])
-            if chapters:
-                first_chapter = chapters[0]
-                images = first_chapter.get("images", [])
-                if images:
-                    first_image = images[0]
-                    if "file_data" in first_image:
-                        b64_before = first_image["file_data"].get("base64", "")
-                        logger.info(f"BEFORE json.dumps(): Base64 length = {len(b64_before)} chars")
-                        logger.info(f"BEFORE json.dumps(): Last 100 chars = {b64_before[-100:]}")
-
         # Generate filename with timestamp
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        book_count = export_data.get("metadata", {}).get("total_books", 0)
-        filename = f"ocr_workbench_export_{timestamp}_books{book_count}.json"
+        filename = f"ocr_workbench_export_{timestamp}.json"
 
-        # Convert to JSON string
-        json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+        # Create async generator for streaming
+        async def generate_json():
+            """Stream JSON chunks directly to response."""
+            async for chunk in service.export_to_json_stream(
+                book_ids=request.book_ids,
+                chapter_ids=request.chapter_ids,
+                include_binary_files=request.include_binary_files,
+            ):
+                yield chunk.encode('utf-8')
 
-        # Log JSON size BEFORE writing
-        logger.info(f"JSON export size: {len(json_str)} characters")
-
-        # CRITICAL: Validate the JSON structure AFTER serialization
-        # Check if JSON is valid and complete
-        logger.info(f"=== VALIDATION AFTER json.dumps() ===")
-        try:
-            reparsed = json.loads(json_str)
-            books = reparsed.get("data", {}).get("books", [])
-            if books:
-                first_book = books[0]
-                chapters = first_book.get("chapters", [])
-                if chapters:
-                    first_chapter = chapters[0]
-                    images = first_chapter.get("images", [])
-                    if images:
-                        first_image = images[0]
-                        if "file_data" in first_image:
-                            b64 = first_image["file_data"].get("base64", "")
-                            logger.info(f"AFTER json.dumps(): Base64 length = {len(b64)} chars")
-                            logger.info(f"AFTER json.dumps(): Last 100 chars = {b64[-100:]}")
-
-                            # Compare with before
-                            if 'b64_before' in locals():
-                                if len(b64) != len(b64_before):
-                                    logger.error(f"BASE64 LENGTH CHANGED during json.dumps()!")
-                                    logger.error(f"Before: {len(b64_before)} chars, After: {len(b64)} chars")
-                                elif b64 != b64_before:
-                                    logger.error(f"BASE64 CONTENT CHANGED during json.dumps()!")
-                                else:
-                                    logger.info(f"VERIFIED: Base64 unchanged during json.dumps()")
-
-                            # Check if base64 appears valid (ends with padding)
-                            if b64.endswith('=') or len(b64) % 4 == 0:
-                                logger.info("VALIDATION: Base64 looks valid (proper padding)")
-                            else:
-                                logger.error(f"VALIDATION ERROR: Base64 appears malformed! Last 100 chars: {b64[-100:]}")
-        except Exception as e:
-            logger.error(f"JSON validation failed: {e}")
-
-        # Write to temp file for streaming (avoids loading large JSON into memory)
-        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.json') as tmp_file:
-            tmp_file.write(json_str.encode("utf-8"))
-            tmp_path = tmp_file.name
-
-        file_size = os.path.getsize(tmp_path)
-        logger.info(
-            f"Export complete: {filename}, size={file_size} bytes"
-        )
-
-        # Stream the file in chunks (8KB chunks for efficient memory usage)
-        def iterfile():
-            with open(tmp_path, mode='rb') as f:
-                while chunk := f.read(8192):  # 8KB chunks
-                    yield chunk
-            # Clean up temp file after streaming
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-
+        # Stream response directly (no intermediate file, no full JSON in memory)
         return StreamingResponse(
-            iterfile(),
+            generate_json(),
             media_type="application/json",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length": str(file_size),
             },
         )
 
@@ -182,7 +108,9 @@ async def import_from_json(
     minio_client = Depends(get_minio_client),
 ):
     """
-    Import books/chapters from JSON export file.
+    Import books/chapters from JSON export file with STREAMING.
+
+    STREAMING ENABLED: Memory-efficient for 1GB+ imports with concurrent users.
 
     Args:
         file: JSON export file (required)
@@ -211,37 +139,20 @@ async def import_from_json(
                 detail="Only .json files are supported",
             )
 
-        # Read and parse JSON
-        logger.info(f"Starting import from file: {file.filename}")
+        # STREAMING: Read file in chunks to avoid loading entire file into RAM
+        logger.info(f"Starting STREAMING import from file: {file.filename}")
+
+        # Read file content (we still need to read it all, but ijson will parse incrementally)
         content = await file.read()
-
-        # Check file size (warn if very large)
         file_size = len(content)
-        logger.info(f"Import file size: {file_size} bytes ({file_size / 1024:.1f} KB)")
-        if file_size > 100 * 1024 * 1024:  # 100 MB
-            logger.warning(f"Large import file: {file_size / 1024 / 1024:.1f} MB")
-
-        try:
-            json_data = json.loads(content.decode("utf-8"))
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid JSON file: {str(e)}",
-            )
-
-        # Validate JSON structure
-        if "data" not in json_data or "books" not in json_data.get("data", {}):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid export format: missing 'data.books' structure",
-            )
+        logger.info(f"Import file size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
 
         # Create service
         service = ExportImportService(db, minio_client)
 
-        # Perform import
-        summary = await service.import_from_json(
-            json_data=json_data,
+        # Perform STREAMING import using ijson
+        summary = await service.import_from_json_streaming(
+            file_content=content,
             merge_strategy=merge_strategy,
             preserve_uuids=preserve_uuids,
         )

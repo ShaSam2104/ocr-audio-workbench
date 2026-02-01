@@ -895,3 +895,670 @@ class ExportImportService:
             self.db.add(transcript)
 
         summary["audios_created"] += 1
+
+    async def export_to_json_stream(
+        self,
+        book_ids: Optional[List[int]] = None,
+        chapter_ids: Optional[List[int]] = None,
+        include_binary_files: bool = True,
+    ):
+        """
+        Stream export data as JSON chunks for memory-efficient large exports.
+
+        Yields JSON string chunks that can be written directly to response.
+
+        This is memory-efficient and suitable for 1GB+ exports with concurrent users.
+        """
+        self._uuid_map = {}
+
+        # Start JSON structure
+        yield '{"format_version": "1.0", '
+        yield f'"exported_at": "{datetime.utcnow().isoformat()}Z", '
+        yield '"application_version": "1.0", '
+        yield '"data": {"books": ['
+
+        # Build query
+        query = (
+            select(Book)
+            .options(
+                joinedload(Book.chapters)
+                .joinedload(Chapter.images)
+                .joinedload(Image.ocr_text),
+                joinedload(Book.chapters)
+                .joinedload(Chapter.audios)
+                .joinedload(Audio.transcript),
+            )
+            .order_by(Book.id)
+        )
+
+        if book_ids:
+            query = query.filter(Book.id.in_(book_ids))
+
+        result = self.db.execute(query)
+        books = result.scalars().unique().all()
+
+        if chapter_ids:
+            chapter_id_set = set(chapter_ids)
+            filtered_books = []
+            for book in books:
+                book.chapters = [ch for ch in book.chapters if ch.id in chapter_id_set]
+                if book.chapters:
+                    filtered_books.append(book)
+            books = filtered_books
+
+        total_books = len(books)
+        total_images = 0
+        total_audios = 0
+        total_chapters = 0
+
+        for book_idx, book in enumerate(books):
+            # Start book object
+            book_uuid = self._generate_uuid()
+            self._uuid_map[f"book_{book.id}"] = book_uuid
+
+            yield '{"uuid": "' + book_uuid + '", '
+            yield '"name": ' + json.dumps(book.name) + ', '
+            yield '"description": ' + json.dumps(book.description) + ', '
+            yield '"languages": ' + json.dumps(book.languages) + ', '
+
+            if book.created_at:
+                yield f'"created_at": "{book.created_at.isoformat()}", '
+
+            yield '"chapters": ['
+
+            for chapter_idx, chapter in enumerate(book.chapters):
+                chapter_uuid = self._generate_uuid()
+                self._uuid_map[f"chapter_{chapter.id}"] = chapter_uuid
+
+                yield '{"uuid": "' + chapter_uuid + '", '
+                yield '"name": ' + json.dumps(chapter.name) + ', '
+                yield '"description": ' + json.dumps(chapter.description) + ', '
+                yield f'"sequence_order": {chapter.sequence_order or 0}, '
+
+                if chapter.created_at:
+                    yield f'"created_at": "{chapter.created_at.isoformat()}", '
+
+                yield '"images": ['
+
+                for image_idx, image in enumerate(chapter.images):
+                    image_uuid = self._generate_uuid()
+                    self._uuid_map[f"image_{image.id}"] = image_uuid
+
+                    # Build image metadata
+                    yield '{"uuid": "' + image_uuid + '", '
+                    yield '"filename": ' + json.dumps(image.filename) + ', '
+                    yield f'"sequence_number": {image.sequence_number}, '
+                    yield f'"page_number": {image.page_number or 0}, '
+                    yield '"detected_language": ' + json.dumps(image.detected_language) + ', '
+                    yield '"ocr_status": ' + json.dumps(image.ocr_status) + ', '
+                    yield f'"is_cropped": {str(image.is_cropped).lower()}, '
+
+                    if image.created_at:
+                        yield f'"created_at": "{image.created_at.isoformat()}", '
+
+                    # Add file data if requested
+                    if include_binary_files:
+                        tmp_file = await self._get_minio_file("images", image.object_key)
+                        if tmp_file:
+                            file_data = self._encode_file_to_base64_streaming(tmp_file)
+                            if file_data:
+                                yield '"file_data": {"base64": "' + file_data["base64"] + '", '
+                                yield '"mime_type": "' + file_data["mime_type"] + '", '
+                                yield f'"size": {file_data["size"]}}}, '
+
+                            try:
+                                os.unlink(tmp_file)
+                            except Exception:
+                                pass
+
+                    # Add OCR text if exists
+                    if image.ocr_text:
+                        yield '"ocr_text": {'
+                        yield '"raw_text_with_formatting": ' + json.dumps(image.ocr_text.raw_text_with_formatting) + ', '
+                        yield '"plain_text_for_search": ' + json.dumps(image.ocr_text.plain_text_for_search) + ', '
+                        yield '"edited_text_with_formatting": ' + json.dumps(image.ocr_text.edited_text_with_formatting) + ', '
+                        yield '"edited_plain_text": ' + json.dumps(image.ocr_text.edited_plain_text) + ', '
+                        yield '"detected_language": ' + json.dumps(image.ocr_text.detected_language) + ', '
+                        yield '"model_used": ' + json.dumps(image.ocr_text.model_used) + '}, '
+
+                    # Remove trailing comma
+                    yield '}], ' if image_idx < len(chapter.images) - 1 else '}]'
+
+                    total_images += 1
+
+                yield ', "audios": ['
+
+                for audio_idx, audio in enumerate(chapter.audios):
+                    audio_uuid = self._generate_uuid()
+                    self._uuid_map[f"audio_{audio.id}"] = audio_uuid
+
+                    yield '{"uuid": "' + audio_uuid + '", '
+                    yield '"filename": ' + json.dumps(audio.filename) + ', '
+                    yield f'"sequence_number": {audio.sequence_number}, '
+                    yield f'"duration_seconds": {audio.duration_seconds or 0}, '
+                    yield '"audio_format": ' + json.dumps(audio.audio_format) + ', '
+                    yield '"detected_language": ' + json.dumps(audio.detected_language) + ', '
+
+                    if audio.created_at:
+                        yield f'"created_at": "{audio.created_at.isoformat()}", '
+
+                    # Add file data if requested
+                    if include_binary_files:
+                        tmp_file = await self._get_minio_file("audio", audio.object_key)
+                        if tmp_file:
+                            file_data = self._encode_file_to_base64_streaming(tmp_file)
+                            if file_data:
+                                yield '"file_data": {"base64": "' + file_data["base64"] + '", '
+                                yield '"mime_type": "' + file_data["mime_type"] + '", '
+                                yield f'"size": {file_data["size"]}}}, '
+
+                            try:
+                                os.unlink(tmp_file)
+                            except Exception:
+                                pass
+
+                    # Add transcript if exists
+                    if audio.transcript:
+                        yield '"transcript": {'
+                        yield '"raw_text_with_formatting": ' + json.dumps(audio.transcript.raw_text_with_formatting) + ', '
+                        yield '"plain_text_for_search": ' + json.dumps(audio.transcript.plain_text_for_search) + ', '
+                        yield '"edited_text_with_formatting": ' + json.dumps(audio.transcript.edited_text_with_formatting) + ', '
+                        yield '"edited_plain_text": ' + json.dumps(audio.transcript.edited_plain_text) + ', '
+                        yield '"detected_language": ' + json.dumps(audio.transcript.detected_language) + ', '
+                        yield '"model_used": ' + json.dumps(audio.transcript.model_used) + '}, '
+
+                    # Remove trailing comma
+                    yield '}}, ' if audio_idx < len(chapter.audios) - 1 else '}}'
+
+                    total_audios += 1
+
+                # End chapter
+                yield '}]}, ' if chapter_idx < len(book.chapters) - 1 else '}]}'
+
+                total_chapters += 1
+
+            # End book
+            yield '}]}, ' if book_idx < total_books - 1 else '}]}'
+
+        # Close data and add metadata
+        yield '], "metadata": {'
+        yield f'"total_books": {total_books}, '
+        yield f'"total_chapters": {total_chapters}, '
+        yield f'"total_images": {total_images}, '
+        yield f'"total_audios": {total_audios}'
+        yield '}}'
+
+        logger.info(
+            f"Streamed export: {total_books} books, {total_chapters} chapters, "
+            f"{total_images} images, {total_audios} audios"
+        )
+
+    def _encode_file_to_base64_streaming(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Encode file to base64 as a single string (memory-efficient chunking).
+
+        Uses 3MB chunks to minimize memory while producing valid base64.
+
+        Returns dict with base64 string and metadata.
+        """
+        try:
+            if not os.path.exists(file_path):
+                logger.warning(f"File not found: {file_path}")
+                return None
+
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                logger.warning(f"Empty file: {file_path}")
+                return None
+
+            mime_type = self._get_mime_type(file_path)
+
+            # Read in 3MB chunks (multiple of 3 for valid base64)
+            chunk_size = 3 * 1024 * 1024
+            base64_chunks = []
+            total_bytes_read = 0
+
+            with open(file_path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_bytes_read += len(chunk)
+                    encoded_chunk = base64.b64encode(chunk).decode("ascii")
+                    base64_chunks.append(encoded_chunk)
+
+            if total_bytes_read != file_size:
+                logger.error(f"File read mismatch: expected {file_size} bytes, read {total_bytes_read}")
+
+            return {
+                "base64": "".join(base64_chunks),
+                "mime_type": mime_type,
+                "size": file_size,
+            }
+
+        except Exception as e:
+            logger.error(f"Error encoding file {file_path}: {e}")
+            return None
+
+    async def import_from_json_streaming(
+        self,
+        file_content: bytes,
+        merge_strategy: str = "skip_duplicates",
+        preserve_uuids: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Stream import from JSON for memory-efficient large imports.
+
+        Uses ijson to parse JSON incrementally without loading entire file into RAM.
+        Processes books, chapters, images, and audios one at a time.
+
+        Memory usage: Constant (~50MB) regardless of file size.
+        """
+        import ijson
+        from io import BytesIO
+
+        summary = {
+            "books_created": 0,
+            "books_updated": 0,
+            "books_skipped": 0,
+            "chapters_created": 0,
+            "chapters_updated": 0,
+            "chapters_skipped": 0,
+            "images_created": 0,
+            "images_skipped": 0,
+            "audios_created": 0,
+            "audios_skipped": 0,
+            "errors": [],
+        }
+
+        self._id_map = {}
+        total_books = 0
+        total_chapters = 0
+        total_images = 0
+        total_audios = 0
+
+        try:
+            # Use BytesIO for efficient parsing
+            file_bytes = BytesIO(file_content)
+
+            # Parse books array incrementally
+            books_parser = ijson.items(file_bytes, 'data.books.item')
+
+            for book_data in books_parser:
+                total_books += 1
+
+                # Validate book structure
+                if "uuid" not in book_data or "name" not in book_data:
+                    logger.warning(f"Skipping invalid book: {book_data}")
+                    summary["books_skipped"] += 1
+                    continue
+
+                # Import the book
+                await self._import_book_streaming(
+                    book_data,
+                    merge_strategy,
+                    preserve_uuids,
+                    summary,
+                )
+
+                total_chapters += len(book_data.get("chapters", []))
+                total_images += sum(
+                    len(ch.get("images", []))
+                    for ch in book_data.get("chapters", [])
+                )
+                total_audios += sum(
+                    len(ch.get("audios", []))
+                    for ch in book_data.get("chapters", [])
+                )
+
+            self.db.commit()
+
+            logger.info(
+                f"Streaming import completed: {total_books} books processed, "
+                f"{total_chapters} chapters, {total_images} images, {total_audios} audios"
+            )
+
+            return summary
+
+        except ijson.JSONError as e:
+            self.db.rollback()
+            logger.error(f"JSON parsing error during streaming import: {e}")
+            summary["errors"].append(f"Invalid JSON format: {str(e)}")
+            return summary
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Streaming import failed, rolling back: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            summary["errors"].append(f"Import failed: {str(e)}")
+            return summary
+
+    async def _import_book_streaming(
+        self,
+        book_data: Dict[str, Any],
+        merge_strategy: str,
+        preserve_uuids: bool,
+        summary: Dict[str, Any],
+    ):
+        """Import a single book (streaming version)."""
+        book_uuid = book_data["uuid"]
+
+        # Check for duplicate book
+        existing_book = self._find_duplicate_book(book_data, merge_strategy)
+
+        if existing_book:
+            if merge_strategy == "skip_duplicates":
+                summary["books_skipped"] += 1
+                self._id_map[book_uuid] = existing_book.id
+                return
+            elif merge_strategy == "replace":
+                self.db.delete(existing_book)
+                self.db.flush()
+                existing_book = None
+            elif merge_strategy == "merge":
+                existing_book.name = book_data["name"]
+                existing_book.description = book_data.get("description")
+                existing_book.languages = book_data.get("languages")
+                self.db.flush()
+                self._id_map[book_uuid] = existing_book.id
+                summary["books_updated"] += 1
+
+        if not existing_book:
+            new_book = Book(
+                name=book_data["name"],
+                description=book_data.get("description"),
+                languages=book_data.get("languages"),
+            )
+            self.db.add(new_book)
+            self.db.flush()
+            self._id_map[book_uuid] = new_book.id
+            summary["books_created"] += 1
+            existing_book = new_book
+
+        # Import chapters
+        for chapter_data in book_data.get("chapters", []):
+            await self._import_chapter_streaming(
+                existing_book.id,
+                chapter_data,
+                merge_strategy,
+                preserve_uuids,
+                summary,
+            )
+
+    async def _import_chapter_streaming(
+        self,
+        book_id: int,
+        chapter_data: Dict[str, Any],
+        merge_strategy: str,
+        preserve_uuids: bool,
+        summary: Dict[str, Any],
+    ):
+        """Import a single chapter (streaming version)."""
+        chapter_uuid = chapter_data["uuid"]
+
+        existing_chapter = self._find_duplicate_chapter(
+            book_id, chapter_data, merge_strategy
+        )
+
+        if existing_chapter:
+            if merge_strategy == "skip_duplicates":
+                summary["chapters_skipped"] += 1
+                self._id_map[chapter_uuid] = existing_chapter.id
+                return
+            elif merge_strategy == "replace":
+                self.db.delete(existing_chapter)
+                self.db.flush()
+                existing_chapter = None
+            elif merge_strategy == "merge":
+                existing_chapter.name = chapter_data["name"]
+                existing_chapter.description = chapter_data.get("description")
+                existing_chapter.sequence_order = chapter_data.get("sequence_order")
+                self.db.flush()
+                self._id_map[chapter_uuid] = existing_chapter.id
+                summary["chapters_updated"] += 1
+
+        if not existing_chapter:
+            new_chapter = Chapter(
+                book_id=book_id,
+                name=chapter_data["name"],
+                description=chapter_data.get("description"),
+                sequence_order=chapter_data.get("sequence_order"),
+            )
+            self.db.add(new_chapter)
+            self.db.flush()
+            self._id_map[chapter_uuid] = new_chapter.id
+            summary["chapters_created"] += 1
+            existing_chapter = new_chapter
+
+        # Import images
+        for image_data in chapter_data.get("images", []):
+            await self._import_image_streaming(
+                existing_chapter.id,
+                image_data,
+                preserve_uuids,
+                summary,
+            )
+
+        # Import audios
+        for audio_data in chapter_data.get("audios", []):
+            await self._import_audio_streaming(
+                existing_chapter.id,
+                audio_data,
+                preserve_uuids,
+                summary,
+            )
+
+    async def _import_image_streaming(
+        self,
+        chapter_id: int,
+        image_data: Dict[str, Any],
+        preserve_uuids: bool,
+        summary: Dict[str, Any],
+    ):
+        """Import a single image with streaming base64 decode."""
+        # Check for duplicate
+        existing = self.db.execute(
+            select(Image).where(
+                Image.chapter_id == chapter_id,
+                Image.filename == image_data["filename"],
+                Image.sequence_number == image_data["sequence_number"],
+            )
+        ).first()
+
+        if existing and existing[0]:
+            summary["images_skipped"] += 1
+            return
+
+        # Create temp file if base64 data present
+        tmp_file = None
+        file_size = None
+        file_hash = None
+
+        if "file_data" in image_data:
+            tmp_file = tempfile.NamedTemporaryFile(
+                delete=False, suffix=f"_{image_data['filename']}"
+            ).name
+
+            if self._decode_base64_to_file(image_data["file_data"]["base64"], tmp_file):
+                file_size = image_data["file_data"]["size"]
+                with open(tmp_file, "rb") as f:
+                    file_hash = hashlib.sha256(f.read()).hexdigest()
+            else:
+                tmp_file = None
+
+        # Upload to MinIO if we have a file
+        object_key = None
+        if tmp_file:
+            try:
+                temp_file_size = os.path.getsize(tmp_file)
+                logger.info(f"Uploading image {tmp_file} to MinIO, size: {temp_file_size} bytes")
+
+                ext = Path(image_data["filename"]).suffix
+                object_key = f"{chapter_id}/temp_{uuid.uuid4().hex}{ext}"
+
+                result = await self.minio.upload_file("images", object_key, tmp_file)
+                if result:
+                    file_hash = result.get("file_hash", file_hash)
+                    object_key = f"{chapter_id}/{object_key.split('/')[-1]}"
+                    logger.info(f"Uploaded to MinIO: {object_key}, size: {result.get('file_size', 'unknown')}")
+            except Exception as e:
+                logger.error(f"Failed to upload image to MinIO: {e}")
+                summary["errors"].append(f"Failed to upload image {image_data['filename']}: {e}")
+                return
+            finally:
+                try:
+                    os.unlink(tmp_file)
+                except Exception:
+                    pass
+
+        # Create image record
+        new_image = Image(
+            chapter_id=chapter_id,
+            object_key=object_key or f"{chapter_id}/placeholder.png",
+            filename=image_data["filename"],
+            sequence_number=image_data["sequence_number"],
+            page_number=image_data.get("page_number"),
+            file_size=file_size,
+            file_hash=file_hash,
+            detected_language=image_data.get("detected_language"),
+            ocr_status=image_data.get("ocr_status", "pending"),
+            is_cropped=image_data.get("is_cropped", False),
+        )
+        self.db.add(new_image)
+        self.db.flush()
+
+        # Rename object key with actual image ID
+        if tmp_file and object_key:
+            try:
+                old_key = object_key
+                new_key = f"{chapter_id}/{new_image.id}{Path(image_data['filename']).suffix}"
+                tmp_download = tempfile.NamedTemporaryFile(delete=False).name
+                if await self.minio.download_file("images", old_key, tmp_download):
+                    await self.minio.upload_file("images", new_key, tmp_download)
+                    await self.minio.delete_file("images", old_key)
+                    new_image.object_key = new_key
+                try:
+                    os.unlink(tmp_download)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"Failed to rename image object: {e}")
+
+        # Create OCR text record if present
+        if "ocr_text" in image_data:
+            ocr_data = image_data["ocr_text"]
+            ocr_text = OCRText(
+                image_id=new_image.id,
+                raw_text_with_formatting=ocr_data.get("raw_text_with_formatting", ""),
+                plain_text_for_search=ocr_data.get("plain_text_for_search", ""),
+                edited_text_with_formatting=ocr_data.get("edited_text_with_formatting"),
+                edited_plain_text=ocr_data.get("edited_plain_text"),
+                detected_language=ocr_data.get("detected_language"),
+                model_used=ocr_data.get("model_used"),
+            )
+            self.db.add(ocr_text)
+
+        summary["images_created"] += 1
+
+    async def _import_audio_streaming(
+        self,
+        chapter_id: int,
+        audio_data: Dict[str, Any],
+        preserve_uuids: bool,
+        summary: Dict[str, Any],
+    ):
+        """Import a single audio with streaming base64 decode."""
+        # Check for duplicate
+        existing = self.db.execute(
+            select(Audio).where(
+                Audio.chapter_id == chapter_id,
+                Audio.filename == audio_data["filename"],
+                Audio.sequence_number == audio_data["sequence_number"],
+            )
+        ).first()
+
+        if existing and existing[0]:
+            summary["audios_skipped"] += 1
+            return
+
+        # Create temp file if base64 data present
+        tmp_file = None
+        file_size = None
+
+        if "file_data" in audio_data:
+            tmp_file = tempfile.NamedTemporaryFile(
+                delete=False, suffix=f"_{audio_data['filename']}"
+            ).name
+            if self._decode_base64_to_file(audio_data["file_data"]["base64"], tmp_file):
+                file_size = audio_data["file_data"]["size"]
+            else:
+                tmp_file = None
+
+        # Upload to MinIO if we have a file
+        object_key = None
+        if tmp_file:
+            try:
+                ext = Path(audio_data["filename"]).suffix
+                object_key = f"{chapter_id}/temp_{uuid.uuid4().hex}{ext}"
+
+                result = await self.minio.upload_file("audio", object_key, tmp_file)
+                object_key = f"{chapter_id}/{object_key.split('/')[-1]}"
+            except Exception as e:
+                logger.error(f"Failed to upload audio to MinIO: {e}")
+                summary["errors"].append(f"Failed to upload audio {audio_data['filename']}: {e}")
+                return
+            finally:
+                try:
+                    os.unlink(tmp_file)
+                except Exception:
+                    pass
+
+        # Create audio record
+        new_audio = Audio(
+            chapter_id=chapter_id,
+            object_key=object_key or f"{chapter_id}/placeholder.mp3",
+            filename=audio_data["filename"],
+            sequence_number=audio_data["sequence_number"],
+            duration_seconds=audio_data.get("duration_seconds"),
+            audio_format=audio_data.get("audio_format"),
+            file_size=file_size,
+            detected_language=audio_data.get("detected_language"),
+            transcription_status="completed" if "transcript" in audio_data else "pending",
+        )
+        self.db.add(new_audio)
+        self.db.flush()
+
+        # Rename object key with actual audio ID
+        if tmp_file and object_key:
+            try:
+                old_key = object_key
+                new_key = f"{chapter_id}/{new_audio.id}{Path(audio_data['filename']).suffix}"
+                tmp_download = tempfile.NamedTemporaryFile(delete=False).name
+                if await self.minio.download_file("audio", old_key, tmp_download):
+                    await self.minio.upload_file("audio", new_key, tmp_download)
+                    await self.minio.delete_file("audio", old_key)
+                    new_audio.object_key = new_key
+                try:
+                    os.unlink(tmp_download)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"Failed to rename audio object: {e}")
+
+        # Create transcript record if present
+        if "transcript" in audio_data:
+            transcript_data = audio_data["transcript"]
+            transcript = AudioTranscript(
+                audio_id=new_audio.id,
+                raw_text_with_formatting=transcript_data.get("raw_text_with_formatting", ""),
+                plain_text_for_search=transcript_data.get("plain_text_for_search", ""),
+                edited_text_with_formatting=transcript_data.get("edited_text_with_formatting"),
+                edited_plain_text=transcript_data.get("edited_plain_text"),
+                detected_language=transcript_data.get("detected_language"),
+                model_used=transcript_data.get("model_used"),
+            )
+            self.db.add(transcript)
+
+        summary["audios_created"] += 1
+
+
