@@ -905,9 +905,7 @@ class ExportImportService:
         """
         Stream export data as JSON chunks for memory-efficient large exports.
 
-        Yields JSON string chunks that can be written directly to response.
-
-        This is memory-efficient and suitable for 1GB+ exports with concurrent users.
+        Uses a cleaner structure tracking approach to avoid bracket/brace errors.
         """
         self._uuid_map = {}
 
@@ -978,13 +976,12 @@ class ExportImportService:
                 if chapter.created_at:
                     yield f'"created_at": "{chapter.created_at.isoformat()}", '
 
+                # Add images array (always include the key, even if empty)
                 yield '"images": ['
-
                 for image_idx, image in enumerate(chapter.images):
                     image_uuid = self._generate_uuid()
                     self._uuid_map[f"image_{image.id}"] = image_uuid
 
-                    # Build image metadata
                     yield '{"uuid": "' + image_uuid + '", '
                     yield '"filename": ' + json.dumps(image.filename) + ', '
                     yield f'"sequence_number": {image.sequence_number}, '
@@ -996,10 +993,9 @@ class ExportImportService:
                     if image.created_at:
                         yield f'"created_at": "{image.created_at.isoformat()}", '
 
-                    # Track if we need a comma before next field
+                    # Add optional fields with proper comma handling
                     needs_comma = False
 
-                    # Add file data if requested
                     if include_binary_files:
                         tmp_file = await self._get_minio_file("images", image.object_key)
                         if tmp_file:
@@ -1011,13 +1007,11 @@ class ExportImportService:
                                 yield '"mime_type": "' + file_data["mime_type"] + '", '
                                 yield f'"size": {file_data["size"]}}}'
                                 needs_comma = True
-
                             try:
                                 os.unlink(tmp_file)
                             except Exception:
                                 pass
 
-                    # Add OCR text if exists
                     if image.ocr_text:
                         if needs_comma:
                             yield ', '
@@ -1028,15 +1022,21 @@ class ExportImportService:
                         yield '"edited_plain_text": ' + json.dumps(image.ocr_text.edited_plain_text) + ', '
                         yield '"detected_language": ' + json.dumps(image.ocr_text.detected_language) + ', '
                         yield '"model_used": ' + json.dumps(image.ocr_text.model_used) + '}'
+                        needs_comma = True
 
-                    # Close image object (comma if more images, no comma if last image)
-                    yield '}, ' if image_idx < len(chapter.images) - 1 else '}'
+                    # Close image object
+                    yield '}'
+                    # Add comma if more images coming
+                    if image_idx < len(chapter.images) - 1:
+                        yield ', '
 
                     total_images += 1
 
-                # Close images array and open audios array
-                yield '], "audios": ['
+                # Close images array
+                yield '], '
 
+                # Add audios array (always include the key, even if empty)
+                yield '"audios": ['
                 for audio_idx, audio in enumerate(chapter.audios):
                     audio_uuid = self._generate_uuid()
                     self._uuid_map[f"audio_{audio.id}"] = audio_uuid
@@ -1051,10 +1051,9 @@ class ExportImportService:
                     if audio.created_at:
                         yield f'"created_at": "{audio.created_at.isoformat()}", '
 
-                    # Track if we need a comma before next field
+                    # Add optional fields with proper comma handling
                     needs_comma = False
 
-                    # Add file data if requested
                     if include_binary_files:
                         tmp_file = await self._get_minio_file("audio", audio.object_key)
                         if tmp_file:
@@ -1066,13 +1065,11 @@ class ExportImportService:
                                 yield '"mime_type": "' + file_data["mime_type"] + '", '
                                 yield f'"size": {file_data["size"]}}}'
                                 needs_comma = True
-
                             try:
                                 os.unlink(tmp_file)
                             except Exception:
                                 pass
 
-                    # Add transcript if exists
                     if audio.transcript:
                         if needs_comma:
                             yield ', '
@@ -1083,25 +1080,34 @@ class ExportImportService:
                         yield '"edited_plain_text": ' + json.dumps(audio.transcript.edited_plain_text) + ', '
                         yield '"detected_language": ' + json.dumps(audio.transcript.detected_language) + ', '
                         yield '"model_used": ' + json.dumps(audio.transcript.model_used) + '}'
+                        needs_comma = True
 
-                    # Close audio object (comma if more audios, no comma if last audio)
-                    yield '}, ' if audio_idx < len(chapter.audios) - 1 else '}'
+                    # Close audio object
+                    yield '}'
+                    # Add comma if more audios coming
+                    if audio_idx < len(chapter.audios) - 1:
+                        yield ', '
 
                     total_audios += 1
 
-                # Close audios array and chapter object
-                yield ']}'  # Close audios array and chapter object
-                # Add comma if more chapters, no comma if last chapter
-                yield ', ' if chapter_idx < len(book.chapters) - 1 else ''
+                # Close audios array
+                yield ']'
+
+                # Close chapter object
+                yield '}'
+                # Add comma if more chapters coming
+                if chapter_idx < len(book.chapters) - 1:
+                    yield ', '
 
                 total_chapters += 1
 
-            # Close book object and books array
-                yield '}]}'  # Close chapters array and book object
-                # Add comma if more books, no comma if last book
-                yield ', ' if book_idx < total_books - 1 else ''
+            # Close chapters array and book object
+            yield ']}'
+            # Add comma if more books coming
+            if book_idx < total_books - 1:
+                yield ', '
 
-        # Close data array and add metadata
+        # Close books array, data object, and root object with metadata
         yield '], "metadata": {'
         yield f'"total_books": {total_books}, '
         yield f'"total_chapters": {total_chapters}, '
