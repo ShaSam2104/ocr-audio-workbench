@@ -996,15 +996,21 @@ class ExportImportService:
                     if image.created_at:
                         yield f'"created_at": "{image.created_at.isoformat()}", '
 
+                    # Track if we need a comma before next field
+                    needs_comma = False
+
                     # Add file data if requested
                     if include_binary_files:
                         tmp_file = await self._get_minio_file("images", image.object_key)
                         if tmp_file:
                             file_data = self._encode_file_to_base64_streaming(tmp_file)
                             if file_data:
+                                if needs_comma:
+                                    yield ', '
                                 yield '"file_data": {"base64": "' + file_data["base64"] + '", '
                                 yield '"mime_type": "' + file_data["mime_type"] + '", '
-                                yield f'"size": {file_data["size"]}}}, '
+                                yield f'"size": {file_data["size"]}}}'
+                                needs_comma = True
 
                             try:
                                 os.unlink(tmp_file)
@@ -1013,15 +1019,17 @@ class ExportImportService:
 
                     # Add OCR text if exists
                     if image.ocr_text:
+                        if needs_comma:
+                            yield ', '
                         yield '"ocr_text": {'
                         yield '"raw_text_with_formatting": ' + json.dumps(image.ocr_text.raw_text_with_formatting) + ', '
                         yield '"plain_text_for_search": ' + json.dumps(image.ocr_text.plain_text_for_search) + ', '
                         yield '"edited_text_with_formatting": ' + json.dumps(image.ocr_text.edited_text_with_formatting) + ', '
                         yield '"edited_plain_text": ' + json.dumps(image.ocr_text.edited_plain_text) + ', '
                         yield '"detected_language": ' + json.dumps(image.ocr_text.detected_language) + ', '
-                        yield '"model_used": ' + json.dumps(image.ocr_text.model_used) + '}, '
+                        yield '"model_used": ' + json.dumps(image.ocr_text.model_used) + '}'
 
-                    # Remove trailing comma
+                    # Close image object
                     yield '}], ' if image_idx < len(chapter.images) - 1 else '}]'
 
                     total_images += 1
@@ -1042,15 +1050,21 @@ class ExportImportService:
                     if audio.created_at:
                         yield f'"created_at": "{audio.created_at.isoformat()}", '
 
+                    # Track if we need a comma before next field
+                    needs_comma = False
+
                     # Add file data if requested
                     if include_binary_files:
                         tmp_file = await self._get_minio_file("audio", audio.object_key)
                         if tmp_file:
                             file_data = self._encode_file_to_base64_streaming(tmp_file)
                             if file_data:
+                                if needs_comma:
+                                    yield ', '
                                 yield '"file_data": {"base64": "' + file_data["base64"] + '", '
                                 yield '"mime_type": "' + file_data["mime_type"] + '", '
-                                yield f'"size": {file_data["size"]}}}, '
+                                yield f'"size": {file_data["size"]}}}'
+                                needs_comma = True
 
                             try:
                                 os.unlink(tmp_file)
@@ -1059,15 +1073,17 @@ class ExportImportService:
 
                     # Add transcript if exists
                     if audio.transcript:
+                        if needs_comma:
+                            yield ', '
                         yield '"transcript": {'
                         yield '"raw_text_with_formatting": ' + json.dumps(audio.transcript.raw_text_with_formatting) + ', '
                         yield '"plain_text_for_search": ' + json.dumps(audio.transcript.plain_text_for_search) + ', '
                         yield '"edited_text_with_formatting": ' + json.dumps(audio.transcript.edited_text_with_formatting) + ', '
                         yield '"edited_plain_text": ' + json.dumps(audio.transcript.edited_plain_text) + ', '
                         yield '"detected_language": ' + json.dumps(audio.transcript.detected_language) + ', '
-                        yield '"model_used": ' + json.dumps(audio.transcript.model_used) + '}, '
+                        yield '"model_used": ' + json.dumps(audio.transcript.model_used) + '}'
 
-                    # Remove trailing comma
+                    # Close audio object
                     yield '}}, ' if audio_idx < len(chapter.audios) - 1 else '}}'
 
                     total_audios += 1
