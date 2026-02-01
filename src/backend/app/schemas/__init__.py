@@ -41,6 +41,12 @@ from app.schemas.export import (
     ExportFolderRequest,
     ExportSelectionRequest,
 )
+from app.schemas.export_import import (
+    ExportImportRequest,
+    ImportRequest,
+    ImportSummary,
+    ExportMetadata,
+)
 
 __all__ = [
     "LoginSchema",
@@ -75,4 +81,8 @@ __all__ = [
     "AudioTranscriptStatusSchema",
     "ExportFolderRequest",
     "ExportSelectionRequest",
+    "ExportImportRequest",
+    "ImportRequest",
+    "ImportSummary",
+    "ExportMetadata",
 ]
