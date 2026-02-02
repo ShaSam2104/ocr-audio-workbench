@@ -30,12 +30,13 @@ class ExportService:
     def _parse_markdown_to_docx_runs(self, text: str, paragraph) -> None:
         """
         Parse markdown formatting and add formatted runs to a docx paragraph.
-        
+
         Supports:
         - **bold text** -> bold
         - *italic text* -> italic
         - `code text` -> monospaced
         - ~~strikethrough~~ -> strikethrough
+        - <u>underline</u> -> underline
         - # Heading -> h1 (handled separately)
         - - bullet -> bullet (handled separately)
 
@@ -47,19 +48,24 @@ class ExportService:
             return
 
         # Pattern to find markdown formatting (ordered by precedence)
-        # This regex finds: **bold**, *italic*, `code`, ~~strikethrough~~
+        # This regex finds: <u>...</u>, **bold**, *italic*, `code`, ~~strikethrough~~
         # Use non-greedy matching and avoid overlapping patterns
-        pattern = r'(\*\*.*?\*\*|~~.*?~~|\*[^*]+\*|`[^`]+`)'
-        
+        # Process <u> tags first to avoid conflicts with other formatting
+        pattern = r'(<u>.*?</u>|\*\*.*?\*\*|~~.*?~~|\*[^*]+\*|`[^`]+`)'
+
         last_end = 0
         for match in re.finditer(pattern, text):
             # Add plain text before this match
             if match.start() > last_end:
                 paragraph.add_run(text[last_end:match.start()])
-            
+
             # Add formatted text
             matched_text = match.group(0)
-            if matched_text.startswith('**') and matched_text.endswith('**'):
+            if matched_text.startswith('<u>') and matched_text.endswith('</u>'):
+                # Underline
+                run = paragraph.add_run(matched_text[3:-4])  # Remove <u> and </u>
+                run.font.underline = True
+            elif matched_text.startswith('**') and matched_text.endswith('**'):
                 # Bold
                 run = paragraph.add_run(matched_text[2:-2])
                 run.bold = True
@@ -76,9 +82,9 @@ class ExportService:
                 run = paragraph.add_run(matched_text[1:-1])
                 run.font.name = 'Courier New'
                 run.font.size = Pt(10)
-            
+
             last_end = match.end()
-        
+
         # Add remaining plain text
         if last_end < len(text):
             paragraph.add_run(text[last_end:])
@@ -86,8 +92,9 @@ class ExportService:
     def _markdown_to_plain_text(self, text: str) -> str:
         """
         Convert markdown-formatted text to plain text (remove markdown syntax).
-        
+
         Removes:
+        - <u>underline</u> -> underline
         - **bold** -> bold
         - *italic* -> italic
         - `code` -> code
@@ -105,6 +112,8 @@ class ExportService:
         if not text:
             return text
 
+        # Remove underline (<u>text</u> -> text)
+        text = re.sub(r'<u>(.*?)</u>', r'\1', text)
         # Remove bold (**text** -> text)
         text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
         # Remove italic (*text* -> text)
@@ -115,7 +124,7 @@ class ExportService:
         text = re.sub(r'`([^`]+)`', r'\1', text)
         # Remove headings (# text -> text)
         text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
-        
+
         return text
 
 
@@ -191,58 +200,132 @@ class ExportService:
     def _add_markdown_text_to_docx(self, doc: Document, text: str) -> None:
         """
         Add markdown-formatted text to a docx document.
-        
+
         Handles:
         - | Markdown tables | with | pipes |
         - # Heading 1
         - ## Heading 2
         - ### Heading 3
-        - **bold**, *italic*, `code`, ~~strikethrough~~
+        - **bold**, *italic*, `code`, ~~strikethrough~~, <u>underline</u>
         - Empty lines (paragraph breaks)
         - Regular paragraphs
+        - Soft line breaks within paragraphs (single \n)
+
+        Line break handling:
+        - Single \n creates a soft line break (shift+enter in Word)
+        - Double \n\n creates a hard paragraph break
 
         Args:
             doc: python-docx Document object
             text: Text with markdown formatting
         """
+        # First, let's detect and handle tables separately
         lines = text.split('\n')
         i = 0
-        
+
+        # Process text, handling tables specially
+        processed_blocks = []
+        current_block_lines = []
+
         while i < len(lines):
             line = lines[i]
             line_stripped = line.strip()
-            
-            if not line_stripped:
-                # Empty line - add spacing
-                doc.add_paragraph()
-                i += 1
-                continue
-            
+
             # Check if this is a table row (starts with |)
             if line_stripped.startswith('|') and line_stripped.endswith('|'):
-                # Parse the table starting from this line
+                # Flush current block first
+                if current_block_lines:
+                    processed_blocks.append(('text', '\n'.join(current_block_lines)))
+                    current_block_lines = []
+
+                # Parse the table
                 end_idx, table_data = self._parse_markdown_table(lines, i)
-                self._add_table_to_docx(doc, table_data)
+                processed_blocks.append(('table', table_data))
                 i = end_idx
-                continue
-            
-            # Check for headings
-            if line_stripped.startswith('# '):
-                doc.add_heading(line_stripped[2:].strip(), level=1)
-            elif line_stripped.startswith('## '):
-                doc.add_heading(line_stripped[3:].strip(), level=2)
-            elif line_stripped.startswith('### '):
-                doc.add_heading(line_stripped[4:].strip(), level=3)
-            elif line_stripped.startswith('- '):
-                # Bullet point
-                paragraph = doc.add_paragraph(line_stripped[2:].strip(), style='List Bullet')
-                self._parse_markdown_to_docx_runs(line_stripped[2:].strip(), paragraph)
+            elif line_stripped == '':
+                # Empty line - this ends the current block
+                if current_block_lines:
+                    processed_blocks.append(('text', '\n'.join(current_block_lines)))
+                    current_block_lines = []
+                processed_blocks.append(('paragraph_break', None))
+                i += 1
             else:
-                # Regular paragraph with potential markdown formatting
-                paragraph = doc.add_paragraph()
-                self._parse_markdown_to_docx_runs(line_stripped, paragraph)
-            
-            i += 1
+                current_block_lines.append(line)
+                i += 1
+
+        # Don't forget the last block
+        if current_block_lines:
+            processed_blocks.append(('text', '\n'.join(current_block_lines)))
+
+        # Now process each block
+        for block_type, content in processed_blocks:
+            if block_type == 'paragraph_break':
+                doc.add_paragraph()
+            elif block_type == 'table':
+                self._add_table_to_docx(doc, content)
+            elif block_type == 'text':
+                self._add_text_block(doc, content)
+
+    def _add_text_block(self, doc: Document, text_block: str) -> None:
+        """
+        Add a text block (which may contain soft line breaks) to the document.
+
+        Handles:
+        - Headings (# ## ###)
+        - Bullet points (-)
+        - Regular paragraphs with soft line breaks merged into continuous text
+
+        Line break handling:
+        - Single \n → merged into continuous text with spaces (not line breaks)
+        - Only \n\n creates paragraph breaks (handled by the calling function)
+
+        Args:
+            doc: python-docx Document object
+            text_block: Text block with lines separated by \n
+        """
+        lines = text_block.split('\n')
+
+        if not lines:
+            return
+
+        # Check if first line is a heading or bullet
+        first_line = lines[0].strip()
+
+        if first_line.startswith('# '):
+            # Heading 1
+            # Merge remaining lines with spaces (continuous text)
+            heading_text = ' '.join(lines[1:]) if len(lines) > 1 else first_line[2:]
+            doc.add_heading(first_line[2:].strip(), level=1)
+            # Add remaining text as regular paragraph if there's more content
+            if len(lines) > 1 and heading_text.strip():
+                para = doc.add_paragraph()
+                self._parse_markdown_to_docx_runs(heading_text.strip(), para)
+        elif first_line.startswith('## '):
+            # Heading 2
+            heading_text = ' '.join(lines[1:]) if len(lines) > 1 else first_line[3:]
+            doc.add_heading(first_line[3:].strip(), level=2)
+            if len(lines) > 1 and heading_text.strip():
+                para = doc.add_paragraph()
+                self._parse_markdown_to_docx_runs(heading_text.strip(), para)
+        elif first_line.startswith('### '):
+            # Heading 3
+            heading_text = ' '.join(lines[1:]) if len(lines) > 1 else first_line[4:]
+            doc.add_heading(first_line[4:].strip(), level=3)
+            if len(lines) > 1 and heading_text.strip():
+                para = doc.add_paragraph()
+                self._parse_markdown_to_docx_runs(heading_text.strip(), para)
+        elif first_line.startswith('- '):
+            # Bullet point - merge all lines with spaces
+            full_text = ' '.join(line.strip() for line in lines)
+            # Remove the leading "- " from first line
+            full_text = full_text[2:]
+            para = doc.add_paragraph(style='List Bullet')
+            self._parse_markdown_to_docx_runs(full_text, para)
+        else:
+            # Regular paragraph - merge all lines with spaces (continuous text)
+            full_text = ' '.join(line.strip() for line in lines)
+            para = doc.add_paragraph()
+            self._parse_markdown_to_docx_runs(full_text, para)
 
     def generate_docx(
         self,
