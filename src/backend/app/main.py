@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     logger.info("Starting up OCR Workbench...")
+    logger.info("Current version 0.1.0")
     try:
         minio_client = get_minio_client()
         await minio_client.ensure_buckets_exist([MINIO_IMAGE_BUCKET, MINIO_AUDIO_BUCKET])
