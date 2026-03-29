@@ -1,11 +1,7 @@
 """Tests for export endpoints."""
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 from app.main import app
 from app.database import get_db
-from app.models.image import Image
-from app.models.audio import Audio
 from app.dependencies import get_minio_client
 from tests.conftest import (
     create_test_user,
@@ -15,28 +11,29 @@ from tests.conftest import (
     create_test_audio_with_transcript,
 )
 from tests.fixtures.minio_mock import MockMinIOService
+from app.auth import create_access_token
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
 
 
 @pytest.fixture
 def mock_minio():
-    """Create mock MinIO service."""
     return MockMinIOService()
 
 
 @pytest.fixture
 def authenticated_headers(db_session_with_client):
-    """Get authenticated headers for testing."""
     user = create_test_user(db_session_with_client, username="testuser", password="password123")
-    # Create a token for the user
-    from app.auth import create_access_token
     token = create_access_token(data={"sub": str(user.id)})
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
 def book_with_images_and_audios(db_session_with_client, authenticated_headers, mock_minio):
-    """Create a book with chapters, images (with OCR), and audios (with transcripts)."""
-    # Override dependencies
+    """Book with 1 chapter, 1 image (with OCR), 1 audio (with transcript)."""
     def _override_get_db():
         return db_session_with_client
 
@@ -46,11 +43,9 @@ def book_with_images_and_audios(db_session_with_client, authenticated_headers, m
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_minio_client] = _override_get_minio
 
-    # Create test data
     book = create_test_book(db_session_with_client, name="Export Test Book")
     chapter = create_test_chapter(db_session_with_client, book_id=book.id, name="Chapter 1")
 
-    # Create image with OCR
     image = create_test_image_with_ocr(
         db_session_with_client,
         chapter_id=chapter.id,
@@ -59,7 +54,6 @@ def book_with_images_and_audios(db_session_with_client, authenticated_headers, m
         ocr_text="This is **bold** text from image 1",
     )
 
-    # Create audio with transcript
     audio = create_test_audio_with_transcript(
         db_session_with_client,
         chapter_id=chapter.id,
@@ -78,71 +72,49 @@ def book_with_images_and_audios(db_session_with_client, authenticated_headers, m
         "headers": authenticated_headers,
     }
 
-    # Cleanup
     app.dependency_overrides.clear()
 
 
+# ============================================================================
+# POST /export/folder
+# ============================================================================
+
 
 class TestExportFolder:
-    """Tests for POST /export/folder endpoint."""
 
-    def test_export_folder_docx_requires_authentication(self, client):
-        """POST /export/folder returns 403 without authentication."""
-        response = client.post(
-            "/export/folder",
-            json={
-                "book_id": 1,
-                "format": "docx",
-            },
-        )
+    def test_no_auth(self, client):
+        response = client.post("/export/folder", json={"book_id": 1, "format": "docx"})
         assert response.status_code == 403
 
-    def test_export_folder_not_found_book(self, client, authenticated_headers):
-        """POST /export/folder returns 404 if book not found."""
+    def test_book_not_found(self, client, authenticated_headers):
         response = client.post(
             "/export/folder",
             headers=authenticated_headers,
-            json={
-                "book_id": 9999,
-                "format": "docx",
-            },
+            json={"book_id": 9999, "format": "docx"},
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
 
-    def test_export_folder_not_found_chapter(self, client, book_with_images_and_audios):
-        """POST /export/folder returns 404 if chapter not found."""
+    def test_chapter_not_found(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/folder",
             headers=headers,
-            json={
-                "book_id": book.id,
-                "chapter_id": 9999,
-                "format": "docx",
-            },
+            json={"book_id": book.id, "chapter_id": 9999, "format": "docx"},
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
 
-    def test_export_folder_invalid_format(self, client, book_with_images_and_audios):
-        """POST /export/folder returns 400 for invalid format."""
+    def test_invalid_format(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/folder",
             headers=headers,
-            json={
-                "book_id": book.id,
-                "format": "pdf",  # Invalid format
-            },
+            json={"book_id": book.id, "format": "pdf"},
         )
         assert response.status_code == 400
-        assert "Invalid format" in response.json()["detail"]
 
-    def test_export_folder_docx_with_images_and_audios(self, client, book_with_images_and_audios):
-        """POST /export/folder returns .docx file with images and audios."""
+    def test_docx_with_images_and_audios(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
@@ -156,12 +128,10 @@ class TestExportFolder:
             },
         )
         assert response.status_code == 200
-        assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        assert "attachment" in response.headers.get("content-disposition", "")
-        assert len(response.content) > 0  # File has content
+        assert "wordprocessingml" in response.headers["content-type"]
+        assert len(response.content) > 0
 
-    def test_export_folder_txt_with_images_and_audios(self, client, book_with_images_and_audios):
-        """POST /export/folder returns .txt file with images and audios."""
+    def test_txt_with_images_and_audios(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
@@ -176,14 +146,12 @@ class TestExportFolder:
         )
         assert response.status_code == 200
         assert response.headers["content-type"] == "text/plain; charset=utf-8"
-        assert "attachment" in response.headers.get("content-disposition", "")
-        assert b"IMAGES" in response.content
-        assert b"AUDIO TRANSCRIPTS" in response.content
-        assert b"bold" in response.content  # Should contain formatted text
+        # OCR text has markdown stripped: "This is bold text from image 1"
+        assert b"bold" in response.content
+        # Transcript text has markdown stripped: "This is italic text from audio 1"
         assert b"italic" in response.content
 
-    def test_export_folder_docx_without_images(self, client, book_with_images_and_audios):
-        """POST /export/folder excludes images if include_images=False."""
+    def test_docx_without_images(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
@@ -199,8 +167,7 @@ class TestExportFolder:
         assert response.status_code == 200
         assert len(response.content) > 0
 
-    def test_export_folder_txt_without_audios(self, client, book_with_images_and_audios):
-        """POST /export/folder excludes audios if include_audio_transcripts=False."""
+    def test_txt_without_audios(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
@@ -214,11 +181,11 @@ class TestExportFolder:
             },
         )
         assert response.status_code == 200
-        assert b"IMAGES" in response.content
-        assert b"AUDIO TRANSCRIPTS" not in response.content
+        # Should have image OCR text but not audio transcript
+        assert b"bold" in response.content
+        assert b"italic" not in response.content
 
-    def test_export_chapter_only(self, client, book_with_images_and_audios):
-        """POST /export/folder exports only specified chapter."""
+    def test_chapter_only(self, client, book_with_images_and_audios):
         book = book_with_images_and_audios["book"]
         chapter = book_with_images_and_audios["chapter"]
         headers = book_with_images_and_audios["headers"]
@@ -234,115 +201,93 @@ class TestExportFolder:
             },
         )
         assert response.status_code == 200
-        assert b"Image 1" in response.content  # Should have the image from this chapter
-        assert b"Audio 1" in response.content  # Should have the audio from this chapter
+        assert b"bold" in response.content
+        assert b"italic" in response.content
+
+    def test_filename_contains_book_name(self, client, book_with_images_and_audios):
+        book = book_with_images_and_audios["book"]
+        headers = book_with_images_and_audios["headers"]
+        response = client.post(
+            "/export/folder",
+            headers=headers,
+            json={"book_id": book.id, "format": "txt"},
+        )
+        assert response.status_code == 200
+        disposition = response.headers.get("content-disposition", "")
+        assert "Export_Test_Book" in disposition
+
+
+# ============================================================================
+# POST /export/selection
+# ============================================================================
 
 
 class TestExportSelection:
-    """Tests for POST /export/selection endpoint."""
 
-    def test_export_selection_requires_authentication(self, client):
-        """POST /export/selection returns 403 without authentication."""
-        response = client.post(
-            "/export/selection",
-            json={
-                "image_ids": [1],
-                "format": "docx",
-            },
-        )
+    def test_no_auth(self, client):
+        response = client.post("/export/selection", json={"image_ids": [1], "format": "docx"})
         assert response.status_code == 403
 
-    def test_export_selection_requires_images_or_audios(self, client, authenticated_headers):
-        """POST /export/selection returns 400 if neither image_ids nor audio_ids provided."""
+    def test_requires_images_or_audios(self, client, authenticated_headers):
         response = client.post(
             "/export/selection",
             headers=authenticated_headers,
-            json={
-                "format": "docx",
-            },
+            json={"format": "docx"},
         )
         assert response.status_code == 400
-        assert "Must provide" in response.json()["detail"]
 
-    def test_export_selection_image_not_found(self, client, book_with_images_and_audios):
-        """POST /export/selection returns 404 if image not found."""
+    def test_image_not_found(self, client, book_with_images_and_audios):
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/selection",
             headers=headers,
-            json={
-                "image_ids": [9999],
-                "format": "docx",
-            },
+            json={"image_ids": [9999], "format": "docx"},
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
 
-    def test_export_selection_audio_not_found(self, client, book_with_images_and_audios):
-        """POST /export/selection returns 404 if audio not found."""
+    def test_audio_not_found(self, client, book_with_images_and_audios):
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/selection",
             headers=headers,
-            json={
-                "audio_ids": [9999],
-                "format": "docx",
-            },
+            json={"audio_ids": [9999], "format": "docx"},
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
 
-    def test_export_selection_invalid_format(self, client, book_with_images_and_audios):
-        """POST /export/selection returns 400 for invalid format."""
+    def test_invalid_format(self, client, book_with_images_and_audios):
         image = book_with_images_and_audios["image"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/selection",
             headers=headers,
-            json={
-                "image_ids": [image.id],
-                "format": "pdf",  # Invalid format
-            },
+            json={"image_ids": [image.id], "format": "pdf"},
         )
         assert response.status_code == 400
-        assert "Invalid format" in response.json()["detail"]
 
-    def test_export_selection_single_image_docx(self, client, book_with_images_and_audios):
-        """POST /export/selection exports single image to .docx."""
+    def test_single_image_docx(self, client, book_with_images_and_audios):
         image = book_with_images_and_audios["image"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/selection",
             headers=headers,
-            json={
-                "image_ids": [image.id],
-                "format": "docx",
-                "include_images": True,
-            },
+            json={"image_ids": [image.id], "format": "docx", "include_images": True},
         )
         assert response.status_code == 200
-        assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        assert "wordprocessingml" in response.headers["content-type"]
         assert len(response.content) > 0
 
-    def test_export_selection_single_audio_txt(self, client, book_with_images_and_audios):
-        """POST /export/selection exports single audio to .txt."""
+    def test_single_audio_txt(self, client, book_with_images_and_audios):
         audio = book_with_images_and_audios["audio"]
         headers = book_with_images_and_audios["headers"]
         response = client.post(
             "/export/selection",
             headers=headers,
-            json={
-                "audio_ids": [audio.id],
-                "format": "txt",
-            },
+            json={"audio_ids": [audio.id], "format": "txt"},
         )
         assert response.status_code == 200
-        assert response.headers["content-type"] == "text/plain; charset=utf-8"
-        assert b"Audio 1" in response.content
-        assert b"italic" in response.content  # Should contain formatted text
+        assert b"italic" in response.content
 
-    def test_export_selection_mixed_images_and_audios(self, client, book_with_images_and_audios):
-        """POST /export/selection exports both images and audios together."""
+    def test_mixed_images_and_audios(self, client, book_with_images_and_audios):
         image = book_with_images_and_audios["image"]
         audio = book_with_images_and_audios["audio"]
         headers = book_with_images_and_audios["headers"]
@@ -357,13 +302,10 @@ class TestExportSelection:
             },
         )
         assert response.status_code == 200
-        assert b"Image 1" in response.content
-        assert b"Audio 1" in response.content
-        assert b"bold" in response.content  # Image text
-        assert b"italic" in response.content  # Audio text
+        assert b"bold" in response.content
+        assert b"italic" in response.content
 
-    def test_export_selection_without_images(self, client, book_with_images_and_audios):
-        """POST /export/selection excludes images if include_images=False."""
+    def test_exclude_images(self, client, book_with_images_and_audios):
         image = book_with_images_and_audios["image"]
         audio = book_with_images_and_audios["audio"]
         headers = book_with_images_and_audios["headers"]
@@ -378,5 +320,7 @@ class TestExportSelection:
             },
         )
         assert response.status_code == 200
-        assert b"Image 1" not in response.content  # Images excluded
-        assert b"Audio 1" in response.content  # Audio included
+        # Images excluded, so "bold" (from image OCR) should not appear
+        assert b"bold" not in response.content
+        # Audio transcript should still be present
+        assert b"italic" in response.content

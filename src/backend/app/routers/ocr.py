@@ -69,6 +69,92 @@ class OCRProcessResponse(BaseModel):
 # ============================================================================
 
 
+def _process_single_image(
+    image_id: int,
+    task_id: str,
+    minio_service: MinIOService,
+    gemini_service: GeminiService,
+    task_manager,
+    languages: Optional[List[str]] = None,
+    model_tier: str = "higher",
+    custom_prompt: Optional[str] = None,
+):
+    """Process a single image for OCR. Each call gets its own DB session."""
+    from app.database import SessionLocal
+    db = SessionLocal()
+
+    try:
+        task_manager.start_image_processing(task_id, image_id)
+
+        image: Optional[Image] = db.query(Image).filter(Image.id == image_id).first()
+        if not image:
+            task_manager.fail_image(task_id, image_id, f"Image {image_id} not found")
+            return
+
+        logger.debug(f"Processing image {image_id} for task {task_id}")
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+        try:
+            asyncio.run(minio_service.download_file(
+                bucket="images",
+                object_key=image.object_key,
+                local_path=tmp_path,
+            ))
+
+            raw_text, detected_language, processing_time_ms, model_used = gemini_service.extract_text_from_image(
+                tmp_path,
+                languages=languages,
+                model_tier=model_tier,
+                custom_prompt=custom_prompt,
+            )
+
+            existing_ocr = db.query(OCRText).filter(OCRText.image_id == image_id).first()
+            if existing_ocr:
+                existing_ocr.raw_text_with_formatting = raw_text
+                existing_ocr.plain_text_for_search = raw_text
+                existing_ocr.detected_language = detected_language
+                existing_ocr.processing_time_ms = processing_time_ms
+                existing_ocr.model_used = model_used
+            else:
+                ocr_text = OCRText(
+                    image_id=image_id,
+                    raw_text_with_formatting=raw_text,
+                    plain_text_for_search=raw_text,
+                    detected_language=detected_language,
+                    processing_time_ms=processing_time_ms,
+                    model_used=model_used,
+                )
+                db.add(ocr_text)
+
+            image.ocr_status = "completed"
+            image.detected_language = detected_language
+            db.commit()
+
+            task_manager.complete_image(task_id, image_id)
+            logger.info(f"Image {image_id} OCR completed in {processing_time_ms}ms using {model_used}")
+
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+    except Exception as e:
+        error_msg = f"Error processing image {image_id}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        task_manager.fail_image(task_id, image_id, error_msg)
+
+        try:
+            db.rollback()
+            image = db.query(Image).filter(Image.id == image_id).first()
+            if image:
+                image.ocr_status = "failed"
+                db.commit()
+        except Exception as db_error:
+            logger.error(f"Failed to update image status in DB: {db_error}")
+    finally:
+        db.close()
+
+
 def _process_images_in_background(
     task_id: str,
     image_ids: List[int],
@@ -80,114 +166,37 @@ def _process_images_in_background(
     custom_prompt: Optional[str] = None,
 ):
     """
-    Background job to process images for OCR.
-    Runs in a thread pool.
-    
-    Args:
-        task_id: Task ID for tracking
-        image_ids: List of image IDs to process
-        minio_service: MinIO service for file operations
-        gemini_service: Gemini service for OCR
-        task_manager: OCR task manager for status tracking
-        languages: Optional list of language codes from the book
-        model_tier: Model tier to use ("higher" or "lower")
-        custom_prompt: Optional custom prompt to combine with the default extraction prompt
+    Background job to process images for OCR concurrently.
+    Runs in a thread pool, spawning parallel workers for each image.
     """
-    # Create a new database session for this background thread
-    from app.database import SessionLocal
-    db = SessionLocal()
-    
-    try:
-        logger.info(f"Background OCR job started for task {task_id} with {len(image_ids)} images using model_tier={model_tier}")
-        task_manager.start_processing(task_id)
+    logger.info(f"Background OCR job started for task {task_id} with {len(image_ids)} images using model_tier={model_tier}")
+    task_manager.start_processing(task_id)
 
-        for image_id in image_ids:
+    max_concurrent = min(len(image_ids), 5)
+    with ThreadPoolExecutor(max_workers=max_concurrent) as image_executor:
+        futures = {
+            image_executor.submit(
+                _process_single_image,
+                image_id,
+                task_id,
+                minio_service,
+                gemini_service,
+                task_manager,
+                languages,
+                model_tier,
+                custom_prompt,
+            ): image_id
+            for image_id in image_ids
+        }
+
+        for future in futures:
             try:
-                # Mark image as processing
-                task_manager.start_image_processing(task_id, image_id)
-
-                # Verify image exists
-                image: Optional[Image] = db.query(Image).filter(Image.id == image_id).first()
-                if not image:
-                    task_manager.fail_image(task_id, image_id, f"Image {image_id} not found")
-                    continue
-
-                logger.debug(f"Processing image {image_id} for task {task_id}")
-
-                # Download image from MinIO to temp file
-                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
-
-                try:
-                    # Download from MinIO (run async in event loop since we're in a thread)
-                    asyncio.run(minio_service.download_file(
-                        bucket="images",
-                        object_key=image.object_key,
-                        local_path=tmp_path,
-                    ))
-
-                    # Extract text using Gemini with language context and model selection
-                    raw_text, detected_language, processing_time_ms, model_used = gemini_service.extract_text_from_image(
-                        tmp_path,
-                        languages=languages,
-                        model_tier=model_tier,
-                        custom_prompt=custom_prompt,
-                    )
-
-                    # Check if OCRText already exists for this image
-                    existing_ocr = db.query(OCRText).filter(OCRText.image_id == image_id).first()
-                    if existing_ocr:
-                        # Update existing record
-                        existing_ocr.raw_text_with_formatting = raw_text
-                        existing_ocr.plain_text_for_search = raw_text  # In production, remove markdown tags
-                        existing_ocr.detected_language = detected_language
-                        existing_ocr.processing_time_ms = processing_time_ms
-                        existing_ocr.model_used = model_used
-                    else:
-                        # Create new OCRText record
-                        ocr_text = OCRText(
-                            image_id=image_id,
-                            raw_text_with_formatting=raw_text,
-                            plain_text_for_search=raw_text,  # In production, remove markdown tags
-                            detected_language=detected_language,
-                            processing_time_ms=processing_time_ms,
-                            model_used=model_used,
-                        )
-                        db.add(ocr_text)
-
-                    # Update image status
-                    image.ocr_status = "completed"
-                    image.detected_language = detected_language
-                    db.commit()
-
-                    # Mark as completed in task manager
-                    task_manager.complete_image(task_id, image_id)
-                    logger.info(f"Image {image_id} OCR completed in {processing_time_ms}ms using {model_used}")
-
-                finally:
-                    # Clean up temp file
-                    Path(tmp_path).unlink(missing_ok=True)
-
+                future.result()
             except Exception as e:
-                error_msg = f"Error processing image {image_id}: {str(e)}"
-                logger.error(error_msg, exc_info=True)
-                task_manager.fail_image(task_id, image_id, error_msg)
-                
-                # Try to update image status in DB
-                try:
-                    db.rollback()  # Rollback any failed transaction
-                    image = db.query(Image).filter(Image.id == image_id).first()
-                    if image:
-                        image.ocr_status = "failed"
-                        db.commit()
-                except Exception as db_error:
-                    logger.error(f"Failed to update image status in DB: {db_error}")
+                image_id = futures[future]
+                logger.error(f"Unhandled error processing image {image_id}: {e}")
 
-        logger.info(f"Background OCR job completed for task {task_id}")
-    
-    finally:
-        # Always close the database session
-        db.close()
+    logger.info(f"Background OCR job completed for task {task_id}")
 
 
 # ============================================================================

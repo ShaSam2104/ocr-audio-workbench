@@ -334,6 +334,7 @@ class ExportService:
         audios: List[Audio],
         transcripts: List[AudioTranscript],
         include_images: bool = True,
+        include_page_breaks: bool = False,
     ) -> str:
         """
         Generate .docx file with OCR text and transcripts with proper markdown formatting.
@@ -355,16 +356,14 @@ class ExportService:
 
         # Add images and their OCR text
         if include_images and images:
-            if images:
-                doc.add_heading("Images", level=1)
-            for img in images:
+            for idx, img in enumerate(images):
                 # Find OCR text for this image
                 ocr_text = next((o for o in ocr_texts if o.image_id == img.id), None)
                 if ocr_text:
                     # Prioritize edited text over raw text
                     text_to_use = (
-                        ocr_text.edited_text_with_formatting 
-                        if ocr_text.edited_text_with_formatting 
+                        ocr_text.edited_text_with_formatting
+                        if ocr_text.edited_text_with_formatting
                         else ocr_text.raw_text_with_formatting
                     )
                     # Add markdown-formatted text
@@ -372,23 +371,33 @@ class ExportService:
                 else:
                     doc.add_paragraph("[No OCR text available]")
 
+                # Add page break between images (not after the last one)
+                if include_page_breaks and idx < len(images) - 1:
+                    doc.add_page_break()
+
         # Add audio transcripts
         if audios:
+            if include_page_breaks and images:
+                doc.add_page_break()
             doc.add_heading("Audio Transcripts", level=1)
-            for audio in audios:
+            for idx, audio in enumerate(audios):
                 # Find transcript for this audio
                 transcript = next((t for t in transcripts if t.audio_id == audio.id), None)
                 if transcript:
                     # Prioritize edited text over raw text
                     text_to_use = (
-                        transcript.edited_text_with_formatting 
-                        if transcript.edited_text_with_formatting 
+                        transcript.edited_text_with_formatting
+                        if transcript.edited_text_with_formatting
                         else transcript.raw_text_with_formatting
                     )
                     # Add markdown-formatted text
                     self._add_markdown_text_to_docx(doc, text_to_use)
                 else:
                     doc.add_paragraph("[No transcript available]")
+
+                # Add page break between audios (not after the last one)
+                if include_page_breaks and idx < len(audios) - 1:
+                    doc.add_page_break()
 
         # Save document to temp file
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
@@ -498,15 +507,18 @@ class ExportService:
         logger.info(f"Exporting book_id={book_id}, chapter_id={chapter_id}, format={format}")
 
         # Query images and audios
+        # Import Chapter for ordering in book-level export
+        from app.models.hierarchy import Chapter
+
         images_query = (
             db.query(Image)
             .filter(Image.chapter_id == chapter_id)
             .order_by(Image.sequence_number)
         ) if chapter_id else (
             db.query(Image)
-            .join(Image.chapter)
-            .filter(Image.chapter.has(book_id=book_id))
-            .order_by(Image.sequence_number)
+            .join(Chapter, Image.chapter_id == Chapter.id)
+            .filter(Chapter.book_id == book_id)
+            .order_by(Chapter.sequence_order, Image.sequence_number)
         )
 
         images = images_query.all() if include_images else []
@@ -522,9 +534,9 @@ class ExportService:
             .order_by(Audio.sequence_number)
         ) if chapter_id else (
             db.query(Audio)
-            .join(Audio.chapter)
-            .filter(Audio.chapter.has(book_id=book_id))
-            .order_by(Audio.sequence_number)
+            .join(Chapter, Audio.chapter_id == Chapter.id)
+            .filter(Chapter.book_id == book_id)
+            .order_by(Chapter.sequence_order, Audio.sequence_number)
         )
 
         audios = audios_query.all() if include_audio_transcripts else []
@@ -537,7 +549,7 @@ class ExportService:
 
         # Generate export file
         if format == "docx":
-            return self.generate_docx(images, ocr_texts, audios, transcripts, include_images)
+            return self.generate_docx(images, ocr_texts, audios, transcripts, include_images, include_page_breaks)
         elif format == "txt":
             return self.generate_txt(images, ocr_texts, audios, transcripts, include_images)
         else:

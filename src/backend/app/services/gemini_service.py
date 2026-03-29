@@ -62,7 +62,12 @@ CRITICAL INSTRUCTIONS:
    - You MUST include a header row (use appropriate headers or empty cells) and a separator row (e.g. |---|---|).
    - Ensure all rows in a table section have the same number of columns.
    - Use | characters to separate columns.
-9. FORMATTING: Use Standard Markdown formatting.
+9. FORMATTING — Detect and preserve visual formatting from the image:
+   - Text that appears **bold** in the image → wrap in **double asterisks**
+   - Text that appears *italic* in the image → wrap in *single asterisks*
+   - Text that appears underlined in the image → wrap in <u>underline tags</u>
+   - Text that appears in ~~strikethrough~~ → wrap in ~~double tildes~~
+   - Only apply formatting when it is clearly visible in the image; do not guess
 Output ONLY the result text. No explanations."""
 
     TRANSCRIPTION_PROMPT = """Transcribe the provided audio file. Return only the transcribed text.
