@@ -20,7 +20,7 @@ class GeminiService:
 
     # Model mappings: Higher tier (accurate), Lower tier (cost-effective)
     MODEL_MAPPING = {
-        ModelTier.HIGHER: "gemini-3-pro-preview",      # Accurate on old/handwritten documents
+        ModelTier.HIGHER: "gemini-3.1-pro-preview",      # Accurate on old/handwritten documents
         ModelTier.LOWER: "gemini-3-flash-preview",             # Cost-effective, still good quality
     }
     
